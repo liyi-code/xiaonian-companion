@@ -1,0 +1,43 @@
+# go-cqhttp 配置示例（小念的 QQ 账号）
+# 复制为 config.yml，把 uin 改成小念的 QQ 号，然后运行 go-cqhttp 扫码登录。
+account:
+  uin: "在此填写小念的QQ号"
+  password: ""
+  encrypt: false
+  status: 0
+  relogin:
+    disabled: false
+    delay: 3
+    interval: 0
+    max-times: 0
+
+heartbeat:
+  interval: 5
+  middlewares:
+    heartbeat: true
+
+message:
+  post-format: string
+  proxy-rewrite: ''
+  ignore-certain-messages: []
+  force-fragment: false
+  fix-url: false
+  extra-output-format: ''
+  skip-mime-scan: false
+
+output:
+  log-level: info
+  log-aging: 15
+  log-force-new: true
+  log-colorful: true
+  debug: false
+
+default-middlewares:
+  access-token: ''        # 若设了 token，本项目 .env 的 QQ_TOKEN 要一致
+  filter: ''
+
+servers:
+  - ws:
+      address: 127.0.0.1:6700
+      middlewares:
+        ws: true

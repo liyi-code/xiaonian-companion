@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>小念</title>
+<script>window.__MODEL_PATH__ = "";</script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  user-select: none;
+}
+
+/* 整个舞台：窗口本身透明，透出桌面；不用任何矩形背景，避免“白板” */
+#stage {
+  position: relative;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-end;
+  padding-bottom: 10px;
+}
+
+/* 加载提示：真模型从 CDN/本地加载需要时间，先显示这里，避免出现卡通占位 */
+#loading {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  z-index: 3; color: #ff9ec4; font-size: 13px; opacity: .85;
+  text-shadow: 0 1px 2px rgba(0,0,0,.4); display: none;
+}
+
+/* ---------- 卡通占位形象（未配置 Live2D 模型时使用）---------- */
+#avatar {
+  position: relative; width: 200px; height: 280px; z-index: 1;
+  filter: drop-shadow(0 10px 16px rgba(140,90,160,.42));
+}
+.head {
+  position: relative; width: 160px; height: 160px; margin: 0 auto;
+  animation: breathe 3.5s ease-in-out infinite;
+}
+.hair {
+  position: absolute; top: -6px; left: 5px; width: 150px; height: 150px;
+  background: #6b4f8a; border-radius: 50% 50% 45% 45%;
+}
+.face {
+  position: absolute; top: 28px; left: 25px; width: 110px; height: 120px;
+  background: #ffe3d3; border-radius: 50% 50% 48% 48%;
+}
+.eye {
+  position: absolute; top: 55px; width: 16px; height: 20px;
+  background: #3a2b4d; border-radius: 50%;
+  animation: blink 4s infinite;
+}
+.eye.left { left: 28px; } .eye.right { right: 28px; }
+.blush {
+  position: absolute; top: 80px; width: 22px; height: 12px;
+  background: #ffb3c1; border-radius: 50%; opacity: .7;
+}
+.blush.left { left: 16px; } .blush.right { right: 16px; }
+.mouth {
+  position: absolute; top: 92px; left: 48px; width: 18px; height: 9px;
+  border-bottom: 3px solid #cc7a88; border-radius: 0 0 12px 12px;
+}
+.body {
+  position: absolute; bottom: 0; left: 35px; width: 130px; height: 130px;
+  background: #f7c9d9; border-radius: 60% 60% 45% 45%;
+}
+
+@keyframes breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes blink  { 0%,92%,100% { transform: scaleY(1); } 96% { transform: scaleY(0.1); } }
+
+/* Live2D 画布容器：真模型用 pixi.js 渲染，覆盖占位 */
+#pixi-container { position: absolute; inset: 0; z-index: 1; }
+#pixi-container canvas { width: 100% !important; height: 100% !important; display: block; }
+
+/* ---------- 文字气泡（固定在窗口顶部，模型缩放留出顶部空间，避免遮挡）---------- */
+#bubble-layer {
+  position: absolute; top: 6px; left: 0; right: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  pointer-events: none;
+}
+.bubble-item {
+  max-width: 78%; opacity: 0; transform: translateY(10px) scale(.96);
+  transition: opacity .35s ease, transform .35s ease;
+  display: flex; flex-direction: column; align-items: center;
+}
+.bubble-item.show { opacity: 1; transform: translateY(0) scale(1); }
+.bubble-name {
+  font-size: 10px; color: #ff9ec4; margin-bottom: 1px;
+  text-shadow: 0 1px 2px rgba(0,0,0,.35);
+}
+.bubble {
+  position: relative;
+  background: rgba(255,255,255,.88);
+  color: #5a3b52;
+  padding: 5px 10px; border-radius: 12px;
+  font-size: 12px; line-height: 1.35;
+  box-shadow: 0 3px 10px rgba(180,120,160,.32);
+  word-break: break-word; white-space: pre-wrap;
+}
+.bubble::after {
+  content: ""; position: absolute; bottom: -7px; left: 50%; transform: translateX(-50%);
+  border: 7px solid transparent; border-top-color: rgba(255,255,255,.92); border-bottom: 0;
+}
+
+/* 模型名提示（切换模型时短暂显示） */
+#model-toast {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 6; background: rgba(0,0,0,.5); color: #fff; font-size: 11px;
+  padding: 3px 10px; border-radius: 10px; opacity: 0; transition: opacity .3s;
+  pointer-events: none; white-space: nowrap;
+}
+#model-toast.show { opacity: .9; }
+
+/* ---------- 模型调整面板（大小 / 位置）---------- */
+#mp-toggle {
+  position: absolute; right: 6px; bottom: 8px; z-index: 9998;
+  width: 26px; height: 26px; border: none; border-radius: 50%;
+  background: rgba(255,255,255,.22); color: #fff; font-size: 14px;
+  cursor: pointer; opacity: .7; transition: opacity .2s; display: none;
+  touch-action: none;
+}
+#mp-toggle:hover { opacity: 1; }
+#model-panel {
+  position: absolute; right: 6px; bottom: 40px; z-index: 9999;
+  width: 184px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(34,28,48,.82); color: #ffd9e8;
+  font-size: 12px; box-shadow: 0 6px 22px rgba(0,0,0,.4);
+  display: none; user-select: none;
+}
+#model-panel.show { display: block; }
+#model-panel .mp-title { font-weight: bold; margin-bottom: 4px; }
+#model-panel label { display: block; margin: 8px 0 2px; }
+#model-panel input[type=range] { width: 100%; }
+#model-panel .mp-tip { opacity: .7; font-size: 11px; margin-top: 6px; }
+#model-panel .mp-row { display: flex; gap: 8px; margin-top: 8px; }
+#model-panel button {
+  flex: 1; border: none; border-radius: 8px; padding: 5px 0;
+  background: #ff7fb0; color: #fff; cursor: pointer; font-size: 12px;
+}
+#model-panel button.ghost { background: rgba(255,255,255,.18); }
+
+/* ---------- 关闭按钮 ---------- */
+#close-btn {
+  position: absolute; top: 4px; right: 6px; z-index: 10;
+  width: 22px; height: 22px; border: none; border-radius: 50%;
+  background: rgba(255,255,255,.4); color: #aa0066;
+  font-size: 16px; line-height: 1; cursor: pointer; opacity: .35;
+  transition: opacity .2s;
+}
+#close-btn:hover { opacity: 1; }
+
+/* ---------- 模型旁常驻控制（输入框显隐 + 大小滑块）---------- */
+#side-controls {
+  position: absolute; left: 5px; top: 50%; transform: translateY(-50%);
+  z-index: 9997; display: none; flex-direction: column; align-items: center; gap: 8px;
+  padding: 8px 6px; border-radius: 12px;
+  background: rgba(34,28,48,.55); opacity: .6; transition: opacity .2s;
+}
+#side-controls:hover { opacity: 1; }
+#input-toggle {
+  width: 34px; height: 34px; border: none; border-radius: 50%;
+  background: rgba(255,255,255,.25); color: #fff; font-size: 16px; line-height: 1;
+  cursor: pointer; transition: background .2s;
+}
+#input-toggle:hover { background: rgba(255,127,176,.85); }
+#size-box {
+  display: none;            /* 仅真模型加载后显示 */
+  flex-direction: column; align-items: center; gap: 3px;
+  color: #ffd9e8; font-size: 10px;
+}
+#size-box input[type=range] { width: 96px; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="bubble-layer"></div>
+    <div id="loading">模型加载中…</div>
+    <div id="avatar">
+      <div class="head">
+        <div class="hair"></div>
+        <div class="face">
+          <div class="eye left"></div>
+          <div class="eye right"></div>
+          <div class="blush left"></div>
+          <div class="blush right"></div>
+          <div class="mouth">      </div>
+    <div id="debug-panel" style="position:absolute;inset:0;z-index:99999;background:rgba(10,8,16,.92);color:#9effa0;font:11px/1.4 monospace;padding:10px;overflow:auto;display:none;white-space:pre-wrap;"></div>
+  </div>
+      </div>
+      <div class="body"></div>
+    </div>
+    <div id="pixi-container"></div>
+    <div id="model-toast"></div>
+    <button id="close-btn" title="关闭形象">×</button>
+    <button id="mp-toggle" title="调整小念">⚙</button>
+    <div id="model-panel">
+      <div class="mp-title">小念 · 调整</div>
+      <label>大小 <span id="mp-size-val">1.00×</span></label>
+      <input type="range" id="size-range" min="0.3" max="2.2" step="0.01" value="1">
+      <div class="mp-tip">在形象上按住拖动即可移动位置</div>
+      <div class="mp-row">
+        <button id="mp-jump">跳一下</button>
+        <button id="mp-turn">转个身</button>
+      </div>
+      <div class="mp-row">
+        <button id="mp-reset" class="ghost">复位</button>
+        <button id="mp-hide">收起</button>
+      </div>
+      <div class="mp-row">
+        <button id="mp-input">显示/隐藏输入框</button>
+      </div>
+      <label>形象 / 表情</label>
+      <select id="expr-select" style="width:100%">
+        <option value="">（普通）</option>
+      </select>
+      <label class="mp-check" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+        <input type="checkbox" id="bubble-toggle" checked> 显示对话气泡
+      </label>
+      <div class="mp-tip" style="margin-top:6px;">快捷键：B 切气泡 · D 模型调试</div>
+    </div>
+    <div id="side-controls">
+      <button id="input-toggle" title="显示/隐藏输入框 (Ctrl+Alt+V)">💬</button>
+      <div id="size-box">
+        <span>大小</span>
+        <input type="range" id="side-size" min="0.3" max="2.2" step="0.01" value="1">
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // 模型地址由 Python 通过 URL query (?model=...) 注入；空串=使用卡通占位
+  const params = new URLSearchParams(location.search);
+  let MODEL_URL = (params.get("model") || "").trim();
+
+  // 运行时错误可视化：任何未捕获错误/未处理的 Promise 拒绝都显示在屏幕顶部红条，
+  // 便于排查（尤其 async 函数里的异常会变成 unhandledrejection，普通 onerror 抓不到）。
+  function showErrBar(msg) {
+    try {
+      let bar = document.getElementById("err-bar");
+      if (!bar) {
+        bar = document.createElement("div");
+        bar.id = "err-bar";
+        bar.style.cssText = "position:absolute;top:0;left:0;right:0;z-index:99;background:rgba(200,0,40,.92);color:#fff;font-size:12px;padding:5px 8px;white-space:pre-wrap;line-height:1.4;";
+        document.body.appendChild(bar);
+      }
+      bar.textContent = "JS错误: " + msg;
+    } catch (e) {}
+  }
+  window.onerror = function (msg, src, line, col) { showErrBar(msg + " @" + (line||"?") + ":" + (col||"?")); };
+  window.onunhandledrejection = function (e) {
+    const r = e && e.reason;
+    showErrBar("Promise: " + ((r && (r.message || r.stack)) || r || "rejection"));
+  };
+
+  // 有真模型时：立即隐藏卡通占位并显示“加载中”，避免“先简化模型再艾莲”
+  const loadingEl = document.getElementById("loading");
+  if (MODEL_URL) {
+    document.getElementById("avatar").style.display = "none";
+    loadingEl.style.display = "block";
+  } else {
+    loadingEl.style.display = "none";
+  }
+
+  function showToast(name) {
+    const t = document.getElementById("model-toast");
+    t.textContent = name || "";
+    t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 1600);
+  }
+  window.showModelToast = showToast;
+  const _toast = params.get("toast");
+  if (_toast) showToast(decodeURIComponent(_toast));
+
+  // ---------- 文字气泡 ----------
+  function showBubble(payload) {
+    const layer = document.getElementById("bubble-layer");
+    const name = payload.name || "小念";
+    const text = payload.text || "";
+    const item = document.createElement("div");
+    item.className = "bubble-item";
+    const who = document.createElement("div");
+    who.className = "bubble-name"; who.textContent = name;
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "bubble"; bodyEl.textContent = text;
+    item.appendChild(who); item.appendChild(bodyEl);
+    layer.appendChild(item);
+    requestAnimationFrame(() => item.classList.add("show"));
+    const ttl = Math.min(20000, Math.max(6000, text.length * 120));
+    setTimeout(() => { item.classList.remove("show"); setTimeout(() => item.remove(), 400); }, ttl);
+    while (layer.children.length > 4) layer.removeChild(layer.firstChild);
+  }
+  window.showBubble = showBubble;
+
+  // ---------- 气泡开关（独立于模型，供控制台热键 UI / 快捷键 B 调用）----------
+  (function bubbleSetup() {
+    const bubbleLayer = document.getElementById("bubble-layer");
+    const BK = "xiaonian_bubble";
+    let bubbleOn = true;
+    try { const b = localStorage.getItem(BK); if (b === "0") bubbleOn = false; } catch (e) {}
+    const applyBubble = () => { if (bubbleLayer) bubbleLayer.style.display = bubbleOn ? "flex" : "none"; };
+    applyBubble();
+    window.__setBubble = (on) => {
+      bubbleOn = !!on; applyBubble();
+      try { localStorage.setItem(BK, bubbleOn ? "1" : "0"); } catch (e) {}
+    };
+    window.__toggleBubble = () => { window.__setBubble(!bubbleOn); };
+  })();
+
+  // 关闭按钮
+  document.getElementById("close-btn").addEventListener("click", () => {
+    if (window.pywebview && window.pywebview.api) window.pywebview.api.close_window();
+  });
+
+  // 注：原 ⚙面板 / 输入框 / 大小滑块等分散按钮已整合进“小念控制台”
+  // （由主进程 gui.py 的全局热键 Ctrl+Alt+C 打开，统一控制所有参数）。
+  // 这里不再保留 webview 内的分散按钮，避免点击失灵 / WebView2 缓存问题。
+
+  // ---------- 真 Live2D（Cubism 2/3/4，pixi-live2d-display）----------
+  window.playMotion = function () {};  // 占位，真模型加载后覆盖
+  if (MODEL_URL) {
+    // Cubism 4（.moc3）必须先加载 Live2D 官方 core；pixi-live2d-display 依赖全局 PIXI
+    // 依赖库已下载到本地 assets/live2d/lib/，由本地 HTTP 伺服提供，不再依赖外网 CDN
+    loadScripts([
+      "lib/pixi.min.js",
+      "lib/live2d.min.js",
+      "lib/cubismcore.min.js",
+      "lib/pixi-live2d-display.min.js"
+    ]).then(loadModel).catch(err => {
+      console.error("Live2D 依赖加载失败：", err);
+      loadingEl.textContent = "模型加载失败，详见控制台";
+      loadingEl.style.display = "block";
+    });
+  }
+
+  function loadScripts(urls) {
+    return urls.reduce((chain, url) => chain.then(() => loadOne(url)), Promise.resolve());
+  }
+  // 任意 CDN 脚本加载失败都打印到控制台，便于定位是哪个 URL 被墙/404
+  window.addEventListener("error", e => {
+    if (e && e.target && e.target.tagName === "SCRIPT") {
+      console.error("脚本加载失败：", e.target.src);
+    }
+  }, true);
+  function loadOne(url) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = url; s.onload = () => resolve(); s.onerror = () => reject(new Error("加载失败: " + url));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function loadModel() {
+    try {
+      window.PIXI = PIXI;  // pixi-live2d-display 需要能访问全局 PIXI
+      const container = document.getElementById("pixi-container");
+      const app = new PIXI.Application({
+        backgroundAlpha: 0,     // 画布透明，透出桌面
+        resizeTo: window,
+        autoStart: true,
+        antialias: true,
+      });
+      container.appendChild(app.view);
+
+      const model = await PIXI.live2d.Live2DModel.from(MODEL_URL, { autoInteract: false });
+      app.stage.addChild(model);
+      loadingEl.style.display = "none";
+      window.__model__ = model;
+      window.__mm__ = model && model.internalModel && model.internalModel.motionManager;
+
+      // 自适应窗口大小（全身模型整体缩放进窗口，顶部留约 18% 空间给气泡，避免遮挡）
+      // 支持用户用面板调“大小”(userScale) 和拖动调“位置”(posOff)，并用 localStorage 记忆。
+      let baseScale = 1, baseX = 0, baseY = 0;
+      let userScale = 1, posOff = { x: 0, y: 0 };
+      const LKEY = "xiaonian_layout_" + MODEL_URL;
+      try {
+        const _saved = JSON.parse(localStorage.getItem(LKEY) || "{}");
+        if (typeof _saved.scale === "number") userScale = _saved.scale;
+        if (_saved.x) posOff.x = _saved.x;
+        if (_saved.y) posOff.y = _saved.y;
+      } catch (e) {}
+      const computeBase = () => {
+        model.scale.set(1);
+        const s = (window.innerHeight * 0.82) / model.height * userScale;
+        baseScale = s;
+        model.scale.set(baseScale);
+        baseX = (window.innerWidth - model.width) / 2;
+        baseY = window.innerHeight - model.height;  // 底部对齐
+      };
+      const applyPos = () => { model.x = baseX + posOff.x; model.y = baseY + posOff.y; };
+      const saveLayout = () => {
+        try { localStorage.setItem(LKEY, JSON.stringify({ scale: userScale, x: posOff.x, y: posOff.y })); } catch (e) {}
+      };
+      const fit = () => { computeBase(); applyPos(); };
+      fit();
+      window.addEventListener("resize", fit);
+
+      // 切到真模型：隐藏占位少女与光晕
+      document.getElementById("avatar").style.display = "none";
+
+      // 读取模型真实的动作组与表情
+      let motionGroups = [];
+      let expressions = [];
+      try {
+        const defs = model.internalModel.motionManager.definitions || {};
+        motionGroups = Object.keys(defs);
+      } catch (e) {}
+      try {
+        const em = model.internalModel.motionManager.expressionManager;
+        expressions = (em && em.definitions ? em.definitions : []).map(d => d.Name || d.name).filter(Boolean);
+      } catch (e) {}
+
+      // 可手动切换的表情池：排除“水印”（那是 vendor 水印，不是形象）
+      const selectableExpr = (expressions || []).filter(n => n && n.indexOf("水印") < 0);
+
+      // ===== 水印处理（VTS 已验证机制：Param191=1 → 水印隐藏）=====
+      // 关键教训：cubism4 的 coreModel 有 setParameterValueById，但没有 getParameterCount，
+      // 之前用 getParameterCount 选 core 永远失败 → 参数法从未执行。这里直接用 setParameterValueById。
+      // 用一个尽量“命中”的 setter：遍历多个候选 core 对象与多种方法名，任一成功即算成功。
+      const wmCores = [];
+      try { if (model.internalModel && model.internalModel.coreModel) wmCores.push(model.internalModel.coreModel); } catch (e) {}
+      try { if (model.internalModel && model.internalModel.coreModel && model.internalModel.coreModel.coreModel) wmCores.push(model.internalModel.coreModel.coreModel); } catch (e) {}
+      try { if (model.internalModel) wmCores.push(model.internalModel); } catch (e) {}
+
+      let wmSetOk = false;
+      const setWmParam = (val) => {
+        let ok = false;
+        for (const c of wmCores) {
+          if (!c) continue;
+          try { if (typeof c.setParameterValueById === "function") { c.setParameterValueById("Param191", val); ok = true; } } catch (e) {}
+        }
+        return ok;
+      };
+      const updateCore = () => {
+        for (const c of wmCores) {
+          try { if (c && typeof c.update === "function") { c.update(); break; } } catch (e) {}
+        }
+      };
+
+      // 每帧强制 Param191=1。挂 beforeModelUpdate（紧挨 coreModel.update() 之前，最稳）+ afterMotionUpdate（双保险）。
+      const applyWmHide = () => { if (setWmParam(1)) wmSetOk = true; };
+      applyWmHide();
+      updateCore();
+      try { if (model.internalModel.on) {
+        model.internalModel.on("beforeModelUpdate", applyWmHide);
+        model.internalModel.on("afterMotionUpdate", applyWmHide);
+      } } catch (e) {}
+
+      // 诊断：报告 setParameterValueById 是否成功命中。
+      try {
+        showToast(wmSetOk ? "水印处理: Param191=1 已生效(setById)" : "水印处理: setById 未命中，需换方案");
+      } catch (e) {}
+
+      // 打底：加载后用「水印」表情覆盖初始空窗期。
+      try {
+        if ((expressions || []).indexOf("水印") >= 0) model.expression("水印");
+      } catch (e) {}
+
+      // ===== 通用动作调度（不依赖具体模型/文件名/动作数量/动作文件是否带 fade）=====
+      // 设计目标：换任意 Live2D 模型都无需改这里，且“永不抽搐、永不空窗、永不卡死”。
+      const motionList = [];
+      motionGroups.forEach(grp => {
+        const defs = (model.internalModel.motionManager.definitions[grp]) || [];
+        defs.forEach((d, i) => {
+          const f = (d && (d.File || "")).toLowerCase();
+          const grpL = (grp || "").toLowerCase();
+          const isIdleHint = grpL.includes("idle") || f.includes("idle");
+          const dur = (d && d.Meta && typeof d.Meta.Duration !== "undefined") ? d.Meta.Duration : 0;
+          const loop = !!(d && d.Meta && d.Meta.Loop);
+          // 最稳：内存里给每个动作补默认 fade——若模型作者没设 FadeIn/OutTime，
+          // 切换就会硬切卡顿。这里在 definitions 上直接补（不动磁盘文件，无副作用）。
+          if (d && d.Meta) {
+            if (typeof d.Meta.FadeInTime !== "number") d.Meta.FadeInTime = 0.5;
+            if (typeof d.Meta.FadeOutTime !== "number") d.Meta.FadeOutTime = 0.5;
+          }
+          motionList.push({ group: grp, index: i, file: f, isIdleHint, dur, loop });
+        });
+      });
+
+      // 选待机动作：优先组名/文件名含 idle 的（标准 Cubism 约定）；
+      // 无 idle 标识时退化：动作数<=2 挑 Loop 且时长最长者，>2 挑第一个。其余作为插播池。
+      let idleMotion = null;
+      const idleHints = motionList.filter(m => m.isIdleHint);
+      if (idleHints.length) {
+        idleMotion = idleHints.slice().sort((a, b) => (b.loop - a.loop) || (b.dur - a.dur))[0];
+      } else if (motionList.length <= 2) {
+        const looped = motionList.filter(m => m.loop);
+        idleMotion = (looped.length ? looped : motionList).slice().sort((a, b) => b.dur - a.dur)[0];
+      } else {
+        idleMotion = motionList[0];
+      }
+      let actMotions = motionList.filter(m => m !== idleMotion);
+
+      // ===== 动作/表情按情绪自适应 =====
+      // 把模型自带的动作(组名+文件名)与表情(名)按关键词归类到 5 种情绪维度
+      // (joy/anger/sadness/calm/anxiety)。说话时若带了情绪，优先播对应情绪池的
+      // 动作/表情，让 Live2D 表现与心情一致（如 Xiyu 的「生气」表情、各类「开心」动作）。
+      // 未归类的动作仍留在 actMotions 作为通用插播池，保证任何模型都不退化。
+      const EMOS = ["joy", "anger", "sadness", "calm", "anxiety"];
+      const EMO_KW = {
+        joy:      ["开心","高兴","笑","乐","喜","星星","心心","爱","happy","joy","cheer","smile","love"],
+        anger:    ["生气","怒","愤","哈气","angry","mad","rage"],
+        sadness:  ["伤心","哭","泪","悲","难过","流泪","sad","cry","tear"],
+        calm:     ["平静","待机","idle","calm","normal","stand","睡","relax","neutral"],
+        anxiety:  ["紧张","慌","害羞","脸红","怕","羞","抖","anxious","shy","nervous","blush"],
+      };
+      const _classify = (name) => {
+        const n = (name || "").toLowerCase();
+        for (const e of EMOS) {
+          if (EMO_KW[e].some(k => n.includes(k.toLowerCase()))) return e;
+        }
+        return null;
+      };
+      const emoMotionPool = { joy: [], anger: [], sadness: [], calm: [], anxiety: [] };
+      const emoExprPool = { joy: [], anger: [], sadness: [], calm: [], anxiety: [] };
+      actMotions.forEach(m => { const e = _classify(m.group + " " + m.file); if (e) emoMotionPool[e].push(m); });
+      selectableExpr.forEach(name => { const e = _classify(name); if (e) emoExprPool[e].push(name); });
+      // 已归类的动作移出通用池（专属情绪池），未归类的保留为通用插播池
+      actMotions = actMotions.filter(m => !_classify(m.group + " " + m.file));
+
+      // 待机循环：播待机动作。
+      // 关键修复（抽动根源）：idle 重播一律用 IDLE 优先级(1)，而非 FORCE(3)。
+      //  - IDLE 不会“强制停掉正在播的 IDLE”：所以待机十几秒后定时器重播、开启时第一段
+      //    还在播时第二段重播，都只会“被忽略/自然接续”，绝不会 t=0 重置 fade-in → 不抽动。
+      //  - FORCE 的插播动作仍能正常停掉 idle（单向生效），说话时的肢体动作照常。
+      //  - 重播用「motion-finish 事件 + 定时器兜底」双来源；在 IDLE 下即使两者都触发，
+      //    第二个 IDLE 重播只会因为“自身正在播”被忽略，不再造成 FORCE 时代的双重硬切。
+      const IDLE_PRI = 1;
+      let idleTimer = null;
+      const clearIdleTimer = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
+      const startIdle = () => {
+        if (!idleMotion) return;
+        clearIdleTimer();
+        try {
+          const m = model.motion(idleMotion.group, idleMotion.index, IDLE_PRI);
+          // Loop 动作由库自动无缝循环：绝不要挂 finish 重播，否则每循环边界会被强制从头
+          // fade-in 重播一次（曲线末值→首值的跳变）→ 周期性的“腿软一下”。
+          // 仅非 Loop 动作才挂 finish 重播 + 定时器兜底。
+          if (m && typeof m.on === "function" && !idleMotion.loop) {
+            m.on("motion-finish", startIdle);
+          }
+        } catch (e) {}
+        // 非 Loop 才用定时器兜底重播（finish 不来也照样续上）；Loop 由库自动循环，不强制重播。
+        if (idleMotion.dur > 0 && !idleMotion.loop) {
+          idleTimer = setTimeout(startIdle, idleMotion.dur * 1000 + 200);
+        }
+      };
+      startIdle();
+
+      // 在形象上：按住拖动 = 移动位置；轻点（几乎不移动）= 切换表情
+      let dragging = false, moved = false, sx = 0, sy = 0, oX = 0, oY = 0;
+      const inModel = (px, py) =>
+        px >= model.x && px <= model.x + model.width &&
+        py >= model.y && py <= model.y + model.height;
+      app.view.addEventListener("pointerdown", (e) => {
+        if (!inModel(e.clientX, e.clientY)) return;
+        dragging = true; moved = false;
+        sx = e.clientX; sy = e.clientY; oX = posOff.x; oY = posOff.y;
+      });
+      window.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - sx, dy = e.clientY - sy;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+        posOff.x = oX + dx; posOff.y = oY + dy;
+        applyPos();
+      });
+      window.addEventListener("pointerup", () => {
+        if (!dragging) return;
+        dragging = false;
+        if (moved) { saveLayout(); }                       // 拖动结束 → 记忆位置
+        else if (selectableExpr.length) {                     // 未移动 → 当作点击切表情
+          try { model.expression(selectableExpr[Math.floor(Math.random() * selectableExpr.length)]); } catch (e) {}
+        }
+      });
+
+      // ---------- 暴露模型桥接（供主进程控制台经 TCP 指令驱动）----------
+      const mpRange = document.getElementById("size-range");
+      const mpVal = document.getElementById("mp-size-val");
+      const sideSize = document.getElementById("side-size");
+      const sizeBox = document.getElementById("size-box");
+
+      window.__setModelScale = (v) => {
+        userScale = parseFloat(v) || 1;
+        computeBase(); applyPos();
+      };
+      window.__saveLayout = saveLayout;
+      window.__resetModel = () => {
+        userScale = 1; posOff = { x: 0, y: 0 };
+        if (mpRange) mpRange.value = 1;
+        if (sideSize) sideSize.value = 1;
+        if (mpVal) mpVal.textContent = "1.00×";
+        computeBase(); applyPos(); saveLayout();
+      };
+
+      // 同步滑块初值（含 localStorage 记忆的 userScale）
+      if (mpRange) mpRange.value = userScale;
+      if (sideSize) sideSize.value = userScale;
+      if (mpVal) mpVal.textContent = userScale.toFixed(2) + "×";
+
+      // 气泡开关的逻辑已上移到顶层 bubbleSetup（独立于模型，供控制台/快捷键 B 调用）。
+
+      // ---------- 调试（快捷键 D）：dump 全部 drawable / 参数 + 自动扫描水印参数 ----------
+      const debugPanel = document.getElementById("debug-panel");
+      const coreUpdate = () => { try { if (typeof core.update === "function") core.update(); } catch (e) {} };
+      const dumpModel = () => {
+        try {
+          const core = model.internalModel.coreModel;
+          const n = core.getDrawableCount ? core.getDrawableCount() : 0;
+          const base = [];
+          for (let i = 0; i < n; i++) { let o = 0; try { o = (core.getDrawableOpacity(i) || 0); } catch (e) {} base.push(o); }
+          let txt = "==== DRAWABLES (" + n + ") ====\n";
+          for (let i = 0; i < n; i++) {
+            let id = ""; try { id = (core.getDrawableId ? core.getDrawableId(i) : "") || ""; } catch (e) {}
+            txt += "[" + i + "] " + id + "  op=" + base[i].toFixed(2) + "\n";
+          }
+          const pcount = core.getParameterCount ? core.getParameterCount() : 0;
+          txt += "\n==== PARAMETERS (" + pcount + ") ====\n";
+          for (let i = 0; i < pcount; i++) {
+            let id = ""; try { id = (core.getParameterId ? core.getParameterId(i) : "") || ""; } catch (e) {}
+            let v = 0; try { v = (core.getParameterValue(i) || 0); } catch (e) {}
+            txt += "[" + i + "] " + id + "  v=" + v.toFixed(2) + "\n";
+          }
+          // 自动扫描：把每个参数设 0 → update → 记录哪些 drawable 消失 → 还原
+          txt += "\n==== 水印扫描（参数=0 后消失的 drawable）====\n";
+          for (let i = 0; i < pcount; i++) {
+            let id = ""; try { id = (core.getParameterId ? core.getParameterId(i) : "") || ""; } catch (e) {}
+            let orig = 0; try { orig = core.getParameterValue(i); } catch (e) {}
+            try { core.setParameterValueByIndex(i, 0); } catch (e) {}
+            coreUpdate();
+            const hidden = [];
+            for (let d = 0; d < n; d++) {
+              let o = 0; try { o = (core.getDrawableOpacity(d) || 0); } catch (e) {}
+              if (base[d] > 0.05 && o < 0.05) hidden.push(d);
+            }
+            try { core.setParameterValueByIndex(i, orig); } catch (e) {}
+            if (hidden.length) txt += "PARAM[" + i + "] " + id + " => 隐藏 drawable [" + hidden.join(",") + "]\n";
+          }
+          coreUpdate();
+          debugPanel.textContent = txt;
+          debugPanel.style.display = "block";
+          try { showToast("已dump模型信息，按D关闭"); } catch (e) {}
+        } catch (e) { debugPanel.textContent = "dump失败: " + e; debugPanel.style.display = "block"; }
+      };
+      const closeDebug = () => { debugPanel.style.display = "none"; };
+
+      // ---------- 全局快捷键 ----------
+      window.addEventListener("keydown", (e) => {
+        const k = (e.key || "").toLowerCase();
+        if (k === "b") { e.preventDefault(); if (window.__toggleBubble) window.__toggleBubble(); }
+        else if (k === "d") { e.preventDefault(); if (debugPanel.style.display === "block") closeDebug(); else dumpModel(); }
+      });
+
+      // 轻微“呼吸”：只做整体上下浮动（pixi 容器坐标，motion 不会碰），叠加 jumpOffset（跳跃）后一起应用。
+      let breatheT = 0, jumpOffset = 0;
+      app.ticker.add(() => {
+        try {
+          breatheT += app.ticker.deltaMS / 1000;
+          const breathe = Math.sin(breatheT * 1.1) * 1.6;
+          model.y = baseY + posOff.y + breathe + jumpOffset;   // 呼吸 + 跳跃偏移（含用户拖动偏移）
+        } catch (e) {}
+      });
+
+      // ---------- 跳跃（纯容器坐标弹跳，不依赖模型资源，绝不抽动）----------
+      let jumping = false;
+      window.playJump = function () {
+        if (jumping) return;
+        jumping = true;
+        clearIdleTimer();   // 跳期间暂停待机重播，结束后由下方 startIdle 续上（杜绝跳动叠加）
+        const dur = 620, t0 = performance.now();
+        const peak = Math.min(60, window.innerHeight * 0.09);            // 跳得矮一点
+        const step = () => {
+          try {
+            const t = (performance.now() - t0) / dur;
+            if (t >= 1) { jumpOffset = 0; jumping = false; if (!idleMotion.loop) startIdle(); return; }
+            let y = Math.sin(t * Math.PI) * peak;                           // 抛物线上→下
+            if (t > 0.82) y += Math.sin((t - 0.82) / 0.18 * Math.PI) * -5;  // 落地小回弹（更轻）
+            jumpOffset = -y;                                               // 屏幕坐标向上为负
+          } catch (e) {}
+          requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      };
+
+      // ---------- 转身（2D 拟真：scale.x 由正→侧→负(镜像/背面)→侧→正，转一圈）----------
+      // 说明：Live2D 是 2D 平面，本模型没有“背面贴图”，真正的“露出背面”需要模型自带背面
+      // 资源；这里用水平镜像(scale.x 变负)模拟“转过去再转回来”，视觉上即为转身。
+      let turning = false;
+      window.playTurn = function (dir) {
+        if (turning) return;
+        turning = true;
+        clearIdleTimer();   // 转身期间暂停待机重播，结束后由下方 startIdle 续上
+        const dur = 1000, t0 = performance.now();
+        const step = () => {
+          try {
+            const t = (performance.now() - t0) / dur;
+            if (t >= 1) { model.scale.x = baseScale; jumpOffset = 0; turning = false; if (!idleMotion.loop) startIdle(); return; }
+            let f = Math.cos(t * Math.PI * 2);                  // 1 → -1 → 1，转一圈
+            if (Math.abs(f) < 0.04) f = 0.04 * (f < 0 ? -1 : 1); // 避免瞬间完全消失
+            model.scale.x = baseScale * f;
+            jumpOffset = -Math.abs(Math.sin(t * Math.PI)) * 6;  // 转身时轻微上提（更小），更像“转过去”
+          } catch (e) {}
+          requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      };
+
+      // 保底眨眼：库自带自动眨眼偶发不灵，这里手动确保眼睛会眨
+      let blinkClock = 0, blinking = false, blinkPhase = 0, nextBlink = 2200 + Math.random() * 3200;
+      const EYE = ["ParamEyeLOpen", "ParamEyeROpen"];
+      const setEyes = v => { try {
+        EYE.forEach(id => model.internalModel.coreModel.setParameterValueById(id, v));
+      } catch (e) {} };
+      app.ticker.add(() => {
+        try {
+          blinkClock += app.ticker.deltaMS;
+          if (blinking) {
+            blinkPhase += app.ticker.deltaMS / 130;
+            setEyes(Math.abs(Math.cos(blinkPhase * Math.PI)));  // 1→0→1
+            if (blinkPhase >= 1) { blinking = false; setEyes(1); nextBlink = 2200 + Math.random() * 3200; blinkClock = 0; }
+          } else if (blinkClock >= nextBlink) {
+            blinking = true; blinkPhase = 0; blinkClock = 0;
+          }
+        } catch (e) {}
+      });
+
+      // 嘴型参数：默认 ParamMouthOpenY（Cubism 标准）。可由 URL ?mouth= 覆盖，
+      // 以便适配嘴型参数名不同的模型（如老模型用 ParamMouthOpen）。
+      const MOUTH_PARAM = (new URLSearchParams(location.search).get("mouth")) || "ParamMouthOpenY";
+
+      // 说话口型：
+      //  - 普通 playMotion 触发的说话（无实时音频驱动）用多正弦叠加的伪节奏，约 2.6s 自动归零；
+      //  - 由 Python 端实时口型驱动时（liveMouth=true），嘴张合完全跟随音频能量
+      //    （window.setMouth 每帧设置 MOUTH_PARAM），ticker 不再覆盖，长句也自然同步。
+      let talkUntil = 0, talkT = 0, liveMouth = false;
+      app.ticker.add(() => {
+        try {
+          // 水印隐藏：复用 applyWmHide（已挂 beforeModelUpdate/afterMotionUpdate，这里再兜底一次）
+          if (typeof applyWmHide === "function") applyWmHide();
+          if (liveMouth) {
+            // 实时口型由 window.setMouth 驱动，ticker 不碰嘴，避免覆盖
+          } else if (performance.now() < talkUntil) {
+            talkT += app.ticker.deltaMS / 1000;
+            // 多正弦叠加，模拟说话节奏（0~0.9 之间张合）
+            const v = (Math.sin(talkT * 14) * 0.5 + 0.5) * 0.6 + (Math.sin(talkT * 23) * 0.5 + 0.5) * 0.3;
+            core.setParameterValueById(MOUTH_PARAM, Math.min(0.9, v));
+          } else {
+            core.setParameterValueById(MOUTH_PARAM, 0);
+          }
+        } catch (e) {}
+      });
+
+      // 说话反馈：口型 + 必换表情 + 偶尔一个肢体动作。
+      // 通用：从插播动作池随机挑一个；actingBusy 锁防止同一动作被反复 start 造成抽搐。
+      // 最稳设计：
+      //  - 回待机（done）与解锁（release）解耦：done 负责“提前让待机接管、消灭空窗”，
+      //    由“finish 事件 或 动作时长定时器”任一触发（released 防重入）;
+      //  - 锁释放（actingBusy=false）用独立的、略长于动作的定时器兜底，绝不依赖 finish
+      //    事件——即使某动作不触发 motion-finish，锁也必释放，后续说话仍能插播动作。
+      let actingBusy = false;
+      window.playMotion = function (args) {
+        // 1) 口型：说话时嘴巴张合约 2.6s
+        talkUntil = performance.now() + 2600;
+        talkT = 0;
+        // 解析情绪（来自 Python 端性格情感权重系统；旧格式 args 为字符串/数组则忽略）
+        let emo = null;
+        if (args && typeof args === "object" && args.emotion) emo = args.emotion;
+        // 2) 反馈表情：优先对应情绪池，否则从全部可选表情随机（更生动）
+        const exprPool = (emo && emoExprPool[emo] && emoExprPool[emo].length) ? emoExprPool[emo] : selectableExpr;
+        if (exprPool.length) {
+          try { model.expression(exprPool[Math.floor(Math.random() * exprPool.length)]); } catch (e) {}
+        }
+        // 3) 肢体动作：优先对应情绪池，否则通用插播池；仅在空闲时做一次
+        const motionPool = (emo && emoMotionPool[emo] && emoMotionPool[emo].length) ? emoMotionPool[emo] : actMotions;
+        if (!actingBusy && motionPool.length && Math.random() < 0.6) {
+          actingBusy = true;
+          clearIdleTimer();   // 取消待机兜底定时器，避免它在插播途中重启 idle 而打断动作（抽动根源）
+          const pick = motionPool[Math.floor(Math.random() * motionPool.length)];
+          try {
+            const m = model.motion(pick.group, pick.index, 3); // FORCE：停旧待机后 t=0 fade-in 播插播动作
+            let doneFired = false;
+            const done = () => {
+              if (doneFired) return; doneFired = true; // 防 finish 与定时器重复触发
+              startIdle();                              // 待机平滑接管，消灭空窗
+            };
+            if (m && typeof m.on === "function") m.on("motion-finish", done);
+            // 提前回待机：按真实时长 70%（非 Loop），Loop/未知用 1500ms 兜底
+            const adv = (pick.dur > 0 && !pick.loop) ? pick.dur * 0.7 * 1000 : 1500;
+            setTimeout(done, Math.max(400, adv));
+            // 锁释放兜底：动作时长 + 1s 余量（或最少 2s），绝不依赖 finish 事件
+            const total = (pick.dur > 0 && !pick.loop) ? pick.dur * 1000 + 1000 : 2500;
+            setTimeout(() => { actingBusy = false; }, Math.max(2000, total));
+          } catch (e) { actingBusy = false; }
+        }
+        // 4) 偶尔来个“大动作”：跳或转身（纯代码模拟，不依赖模型动作文件）
+        if (!jumping && !turning && Math.random() < 0.22) {
+          if (Math.random() < 0.5) window.playJump(); else window.playTurn(-1);
+        }
+      };
+
+      // ---------- 实时口型驱动（LipSync）----------
+      // 由 Python 端按播放进度把音频 RMS 能量传过来：startTalk 标记“说话中”并锁定当前
+      // 气泡，setMouth 把能量映射成嘴张合度(ParamMouthOpenY)，stopTalk 在音频播完时归零嘴型
+      // 并淡出气泡。长句也全程同步，不再像固定 2.6s 伪节奏那样提前闭嘴。
+      let talkBubble = null, mouthPeak = 0.05, mouthLast = 0.0;
+      window.startTalk = function () {
+        liveMouth = true;
+        mouthPeak = 0.05;   // 每句话重新校准自适应基准
+        mouthLast = 0.0;
+        try {
+          const layer = document.getElementById("bubble-layer");
+          const last = layer && layer.lastElementChild;   // 即本条 showBubble 刚插入的气泡
+          if (last) { last.classList.add("talk-bubble"); talkBubble = last; }
+        } catch (e) {}
+      };
+      window.stopTalk = function () {
+        liveMouth = false;
+        try {
+          const core = model.internalModel.coreModel;
+          if (core) core.setParameterValueById(MOUTH_PARAM, 0);
+        } catch (e) {}
+        if (talkBubble) {
+          const b = talkBubble; talkBubble = null;
+          b.classList.remove("show");
+          setTimeout(() => { if (b.parentNode) b.remove(); }, 400);
+        }
+      };
+      window.setMouth = function (v) {
+        if (!liveMouth) return;   // 非说话中忽略（避免覆盖伪节奏/待机）
+        // 自适应基准：用近期峰值做归一化，兼容不同音量/人声，避免“张不开”或“乱张”。
+        // 快速跟上峰值、缓慢回落；低于峰值 12% 视为静音闭嘴，让停顿/气口明显。
+        if (v > mouthPeak) mouthPeak = v;
+        else mouthPeak = Math.max(0.04, mouthPeak * 0.995 + v * 0.005);
+        const ref = Math.max(0.04, mouthPeak);
+        let m = v < ref * 0.12 ? 0 : (v / ref) * 0.9;
+        m = Math.min(0.9, m);
+        // 轻微平滑，去掉逐帧抖动（约 30% 跟随），口型更自然
+        m = mouthLast * 0.7 + m * 0.3;
+        mouthLast = m;
+        try {
+          const core = model.internalModel.coreModel;
+          if (core) core.setParameterValueById(MOUTH_PARAM, m);
+        } catch (e) {}
+      };
+    } catch (e) {
+      console.error("Live2D 模型加载失败，回退卡通占位：", e);
+      loadingEl.style.display = "none";
+      document.getElementById("avatar").style.display = "flex";
+    }
+  }
+  </script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+# 虚拟环境与依赖
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 个人密钥与本地配置（含 API Key，切勿提交/分享）
+.env
+.env.bak
+.env.example.bak
+
+# 运行时生成的数据与日志（含聊天记录、自主权限改动、记忆归档等个人隐私）
+data/
+*.log
+*.log.*
+sovits.log
+
+# 下载/缓存的大模型（体积大，按需本地生成，不入库）
+models/
+diag_recording.wav
+ref_yae_clean.wav
+*.wav
+
+# 个人数据备份目录（clean_user_version.py 产物，含聊天记录/密钥备份）
+personal_backup_*/
+
+# 意识层 C++ 加速库（编译产物，不入库；换机器时运行 build_pyclayer 重新生成）
+src/clayer/pyclayer.pyd
+src/clayer/pyclayer*.so
+src/clayer/pyclayer*.pyd
+src/clayer/**/pyclayer*.so
+src/clayer/**/pyclayer*.pyd
+src/clayer/cpp/cpp_config.h
+# 意识层运行时状态（mind.json 等，属个人长期记忆，不入库）
+src/clayer/brain_state/
+
+# 系统/编辑器文件
+Thumbs.db
+.DS_Store
+*.bak
+*.tmp
+
+# 个人密钥备份（clean_user_version.py 产物，可能含真实 Key）
+.env.personal_bak_*
+*.personal_bak_*
+
+# 调试 / 开发过程产物（不入库）
+@AutomationLog.txt
+out.txt
+pw_install*.txt
+memory_export.md
+MEMORY.md
+SESSION_NOTES.md
+test_*.py
+repro*.wav
+repro*.log
