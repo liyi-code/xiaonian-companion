@@ -1231,7 +1231,7 @@ class App:
         try:
             reply = self.assistant.chat(text, on_tool=on_tool, on_token=on_token)
         except Exception as e:
-            self.root.after(0, lambda: self.append("出错了", str(e)))
+            self.root.after(0, lambda e=e: self.append("出错了", str(e)))
             return
         # 气泡收尾：补换行 + 滚动到底
         self.root.after(0, self._stream_end)
@@ -1439,8 +1439,16 @@ class App:
             return
         py = os.path.join(home, "runtime", "python.exe")
         if not os.path.exists(py):
-            self.show_voice_status("未找到 GPT-SoVITS 的 runtime/python.exe", 6000)
-            return
+            # 回退：优先用 .env 的 SOVITS_PYTHON（通常是已配好 cu128 torch 的独立 venv，
+            # 修 RTX50 系 sm_120 的 "no kernel image" 崩溃），再回退本机 D:\sovits_env。
+            alt = CONFIG.get("sovits_python", "").strip()
+            if alt and os.path.exists(alt):
+                py = alt
+            elif os.path.exists(r"D:\sovits_env\python.exe"):
+                py = r"D:\sovits_env\python.exe"
+            else:
+                self.show_voice_status("未找到 GPT-SoVITS 的 runtime/python.exe", 6000)
+                return
         ref = CONFIG.get("sovits_ref_audio", "")
         reftext = CONFIG.get("sovits_ref_text", "")
         # 使用 v2 官方接口 api_v2.py + tts_infer.yaml 的 custom 段
@@ -1591,7 +1599,7 @@ class App:
                 self._schedule_care(text)   # 提问后 6-10 分钟自动触发一次“主动关心”
                 self._reply_one(text)
             except Exception as e:
-                self.root.after(0, lambda: self.append("出错了", str(e)))
+                self.root.after(0, lambda e=e: self.append("出错了", str(e)))
             finally:
                 self.busy_with_user = False
 

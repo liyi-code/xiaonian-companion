@@ -55,3 +55,12 @@ SESSION_NOTES.md
 test_*.py
 repro*.wav
 repro*.log
+_*.py
+
+# 本机专用大体积工具/模型（不入公开仓库）
+llamacpp-cuda/
+download_llamacpp.ps1
+find_gguf.ps1
+启动_llamacpp_cuda.bat
+# Xiyu Live2D 模型为非商用授权，公开仓库仅保留可商用 hiyori_pro
+assets/live2d/Xiyu/

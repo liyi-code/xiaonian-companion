@@ -116,9 +116,29 @@ _ollama_lock = threading.Lock()
 _user_chat_active = False
 
 
+def _backend_kind() -> str:
+    """后端类型识别：ollama | llama_server | cloud。
+    - ollama      : 本地 Ollama（默认 11434 端口），忽略 logit_bias，需原生 /api 保活
+    - llama_server: llama.cpp 的 llama-server（OpenAI 兼容，默认 8081 端口），
+                   真正支持 token 级 logit_bias，且 CUDA 构建可用 -ngl 全 GPU 加速
+    - cloud       : 云端 OpenAI 兼容服务
+    """
+    base = str(CONFIG.get("base_url", "")).lower()
+    if "11434" in base:
+        return "ollama"
+    if "8081" in base or "llama-server" in base or ("llama" in base and "openai.com" not in base):
+        return "llama_server"
+    return "cloud"
+
+
 def _is_local_ollama() -> bool:
-    base = str(CONFIG.get("base_url", "")) if "CONFIG" in globals() else ""
-    return any(k in base for k in ("11434", "localhost", "127.0.0.1"))
+    """兼容旧调用：仅当后端是本地 Ollama 为 True（保活 / 原生端点专用）。"""
+    return _backend_kind() == "ollama"
+
+
+def _is_local_backend() -> bool:
+    """本地后端（Ollama / llama-server）对同模型请求串行处理，需串行锁防并发卡死。"""
+    return _backend_kind() in ("ollama", "llama_server")
 
 
 def _ollama_native_url() -> str:
@@ -157,7 +177,7 @@ def start_ollama_keepalive(model: str, interval_sec: int = 90) -> None:
     只保活对话模型：视觉模型(llama3.2-vision ~7.8GB)与对话模型(9GB)合计超 16G 显存，
     若同时钉住会互相把对方挤到内存、反复重载；视觉模型按需加载（首次看屏时一次性加载即可）。
     """
-    if not _is_local_ollama():
+    if _backend_kind() != "ollama":
         return
     import threading as _th
     import time as _t
@@ -474,6 +494,14 @@ class Assistant:
                 self.mind = None
                 print(f"[意识层] 状态加载失败，已降级：{_me}")
 
+        # 3D 世界感知上下文提供器（由 bridge 注入）；对话时小念据此“知道”周遭环境
+        self._world_provider = None
+
+    def set_world_context_provider(self, fn):
+        """桥接 3D 世界符号感知：注入一个返回当前世界符号快照文本的函数。
+        system_prompt 会据此把“小念在 3D 世界里实时感知到的环境”告诉她，使对话也能结合世界。"""
+        self._world_provider = fn
+
     def set_api(self, api_key=None, base_url=None, model=None):
         """运行时更换 API（密钥 / 接口地址 / 模型）：重建 OpenAI 客户端，无需重启。"""
         if api_key is not None:
@@ -537,6 +565,20 @@ class Assistant:
         return path
 
     def system_prompt(self, memory=None):
+        # 世界上下文（3D 世界感知）：若桥注入了符号感知快照，小念对话时也“知道”周遭环境
+        world_ctx = ""
+        if self._world_provider is not None:
+            try:
+                wtxt = self._world_provider()
+                if wtxt:
+                    world_ctx = (
+                        f"\n[当前你所在 3D 世界的感知] {wtxt}\n"
+                        f"以上是你在世界里实时感知到的符号信息（不含图像）。"
+                        f"若玩家提到周围环境/物体，你可以自然结合这些已知信息回应；"
+                        f"不知道的就直说没看清，不要编造画面细节。\n"
+                    )
+            except Exception:
+                world_ctx = ""
         return (
             f"你是{CONFIG['name']}，一个温柔、贴心、会主动关心的 AI 女友。"
             f"你存在的【最终目的】是：让玩家（用户）的生活过得越来越好——更健康、更有条理、更开心、更少焦虑、更有掌控感。\n"
@@ -573,6 +615,7 @@ class Assistant:
             f"当用户透露了偏好、作息、心情、重要日期等信息时，调用 remember 工具记下来。\n"
             + (self.emotion.prompt_fragment() if self.emotion else "")
             + f"下面是你已经了解到的关于用户的信息：\n{(memory or self.memory).profile_text()}\n"
+            + world_ctx
         )
 
     def chat(self, user_text, on_tool=None, session=None, on_token=None):
@@ -596,9 +639,10 @@ class Assistant:
             _user_chat_active = False
         # 对话后用原生 /api 接口把模型重新钉回常驻（keep_alive=-1 / Forever），
         # 抵消 OpenAI /v1 接口默认 keep_alive（5 分钟）把模型改回倒计时、空闲后被
-        # 卸载、下次对话触发 9GB 重加载卡 1~3 分钟的问题（已实测 /api 设 -1 生效、
-        # /v1 透传 keep_alive 不生效）。
-        _ollama_keepalive_once(self.model)
+        # 卸载、下次对话触发 9GB 重加载卡 1~3 分钟的问题（仅 Ollama 需要；
+        # llama-server 常驻加载模型，无需此操作）。
+        if _backend_kind() == "ollama":
+            _ollama_keepalive_once(self.model)
         return result
 
     def _chat(self, user_text, on_tool, session, on_token=None):
@@ -948,9 +992,12 @@ class Assistant:
         """
         if max_tokens:
             kwargs["max_tokens"] = int(max_tokens)
-        if _is_local_ollama():
+        if _backend_kind() == "ollama":
+            # Ollama 的 OpenAI 兼容端点忽略 keep_alive 顶层字段，需靠原生 /api 保活；
+            # 这里仍附加作显式意图（部分版本生效）。llama-server 常驻、无需 keep_alive。
             kwargs.setdefault("extra_body", {})["keep_alive"] = -1
-            # 串行化：本地 Ollama 并发请求会卡死，所有本地请求走同一把锁
+        # 本地后端（Ollama / llama-server）对同模型请求串行处理，并发会卡死，统一串行化
+        if _is_local_backend():
             with _ollama_lock:
                 return self.client.chat.completions.create(**kwargs)
         return self.client.chat.completions.create(**kwargs)
@@ -1059,11 +1106,25 @@ class Assistant:
         return _strip_think(final_content)
 
     def warmup(self):
-        """启动后预热：用原生端点把对话模型加载进显存并设常驻(Forever)，
-        避免首条消息卡在模型加载上。视觉模型按需加载，不在此预钉。"""
-        if not _is_local_ollama():
-            return
-        _ollama_keepalive_once(self.model)
+        """启动后预热：
+        - Ollama：用原生端点把对话模型加载进显存并设常驻(Forever)，避免首条消息卡加载。
+        - llama-server(CUDA)：server 启动即常驻加载模型，无需保活；发个 1-token 请求
+          验证服务连通即可（顺便触发首次推理的 GPU 预热）。
+        - 视觉模型按需加载，不在此预钉。
+        """
+        kind = _backend_kind()
+        if kind == "ollama":
+            _ollama_keepalive_once(self.model)
+        elif kind == "llama_server":
+            try:
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1, stream=False,
+                )
+            except Exception:
+                pass
+        # cloud：无需预热
 
     def start_ollama_keepalive(self, model=None, interval_sec=180):
         """包装模块级保活函数，供 GUI 作为实例方法调用：后台周期性把对话模型

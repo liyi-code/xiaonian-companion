@@ -49,6 +49,48 @@ def _sanitize_tts_text(text):
     return s
 
 
+def _split_long_text(text, max_chars=150):
+    """把长文本切成适合单次 TTS 的小段。
+
+    优先在句末标点（。！？；.!?; 及换行）处断开，让语音在句间自然停顿；
+    若某段仍超过 max_chars（如长串无标点文字），再按长度硬切。
+    返回片段列表（每段非空、已 strip）。
+    """
+    if not text:
+        return []
+    # 在句末标点后切分（标点保留在前一段末尾）
+    raw = re.split(r"(?<=[。！？!?；;])", text)
+    pieces = []
+    for p in raw:
+        p = p.strip()
+        if not p:
+            continue
+        # 单段仍过长：进一步按逗号/空格软切，再不行硬切
+        if len(p) > max_chars:
+            sub = re.split(r"(?<=[，,、\s])", p)
+            buf = ""
+            for s in sub:
+                if buf and len(buf) + len(s) > max_chars:
+                    pieces.append(buf.strip())
+                    buf = s
+                else:
+                    buf += s
+            if buf.strip():
+                pieces.append(buf.strip())
+        else:
+            pieces.append(p)
+    # 兜底：极端情况下上面仍可能产生超长段，强制按 max_chars 硬切
+    out = []
+    for p in pieces:
+        while len(p) > max_chars:
+            out.append(p[:max_chars])
+            p = p[max_chars:]
+        if p.strip():
+            out.append(p.strip())
+    return out
+
+
+
 
 # --------------------------------------------------------------------------- #
 # 语音输入（麦克风录音 -> 文字）
@@ -372,7 +414,7 @@ class TTS:
     def is_ready(self):
         return self.enabled and bool(self.ref_audio) and bool(self.url)
 
-    def speak(self, text, on_play=None, on_level=None):
+    def speak(self, text, on_play=None, on_level=None, on_audio=None):
         """合成并播放。出错时返回错误信息字符串（调用方决定是否展示）。
 
         on_play: 可选回调，在音频「开始播放」前被调用（仅 200 成功时）。
@@ -380,6 +422,10 @@ class TTS:
         (~数秒) 期间动作已播完、声音才姗姗来迟的“不同步”现象。
         on_level: 可选回调，播放期间按播放进度周期性回调 on_level(rms)，
         用于实时口型驱动(LipSync)，让嘴型随音频能量张合，长句也同步。
+        on_audio: 可选回调，每合成完一小段就把 wav 字节交给它（而非在本机
+        播放）。用于把语音推给外部渲染端（如 3D 游戏引擎）自行播放——
+        此时 on_play 仍会触发（告知“开始说话”），on_level 可选（若外部
+        自行做口型同步则无需传）。
         """
         if not self.enabled:
             return None
@@ -396,36 +442,54 @@ class TTS:
         text = _sanitize_tts_text(text)
         if not text:
             return None
-        try:
-            resp = requests.post(
-                self.url.rstrip("/") + "/tts",
-                # api_v2.py 的 POST /tts 端点(TTS_Request 模型)字段名如下：
-                # ref_audio_path / text_lang / prompt_lang / speed_factor /
-                # super_sampling(降噪) / sample_steps。旧代码用的 text_language/
-                # refer_wav_path/speed/if_sr 全部对不上，导致降噪、语速、参考音频
-                # 从未真正生效。
-                json={
-                    "text": text,
-                    "text_lang": "zh",
-                    "ref_audio_path": self.ref_audio,
-                    "prompt_text": self.ref_text,
-                    "prompt_lang": "zh",
-                    "speed_factor": self.speed,
-                    "super_sampling": self.if_sr,  # 超分降噪(默认关；开则更干净)
-                    "sample_steps": self.sample_steps,  # 8 够用且快；越大越细腻越慢
-                },
-                timeout=60,
-            )
+        # 长文本切分：GPT-SoVITS 单次 /tts 对文本长度敏感，且整段合成耗时会随字数
+        # 线性增长（实测 ~300 字约 25s）。若一条回复过长，单次请求极易超过超时
+        # 而失败（"长语音不合成"）。这里按句切成小段，逐句合成+顺序播放：
+        #   · 每句都在超时内、声音更早出来；
+        #   · 音色一致（每句都用同一参考音/提示文本）；
+        #   · 口型(on_level)逐句连续驱动；首句触发 on_play(气泡+说话动作)，末句后才归位。
+        chunks = _split_long_text(text, max_chars=150)
+        played_first = False
+        for ch in chunks:
+            try:
+                resp = requests.post(
+                    self.url.rstrip("/") + "/tts",
+                    # api_v2.py 的 POST /tts 端点(TTS_Request 模型)字段名如下：
+                    # ref_audio_path / text_lang / prompt_lang / speed_factor /
+                    # super_sampling(降噪) / sample_steps。旧代码用的 text_language/
+                    # refer_wav_path/speed/if_sr 全部对不上，导致降噪、语速、参考音频
+                    # 从未真正生效。
+                    json={
+                        "text": ch,
+                        "text_lang": "zh",
+                        "ref_audio_path": self.ref_audio,
+                        "prompt_text": self.ref_text,
+                        "prompt_lang": "zh",
+                        "speed_factor": self.speed,
+                        "super_sampling": self.if_sr,  # 超分降噪(默认关；开则更干净)
+                        "sample_steps": self.sample_steps,  # 8 够用且快；越大越细腻越慢
+                    },
+                    timeout=90,
+                )
+            except Exception as e:
+                return f"语音合成/播放失败：{e}"
             if resp.status_code != 200:
                 return f"GPT-SoVITS 返回错误 {resp.status_code}：{resp.text[:200]}"
-            # 音频即将开始播放：先触发形象口型/动作/气泡，使其与声音同步
-            if on_play:
+            # 首句音频即将开始播放：先触发形象口型/动作/气泡，使其与声音起点对齐
+            if not played_first:
+                if on_play:
+                    try:
+                        on_play()
+                    except Exception:
+                        pass
+                played_first = True
+            if on_audio is not None:
+                # 3D 模式：把 wav 字节交给外部渲染端（如游戏引擎）播放，本机不发音
                 try:
-                    on_play()
+                    on_audio(resp.content)
                 except Exception:
                     pass
-            play_wav_bytes(resp.content, self.volume, on_level=on_level,
-                           output_device=self.output_device)
-            return None
-        except Exception as e:
-            return f"语音合成/播放失败：{e}"
+            else:
+                play_wav_bytes(resp.content, self.volume, on_level=on_level,
+                               output_device=self.output_device)
+        return None
