@@ -11,7 +11,7 @@
      总耗时 ≈ max(learn, tts) 而非 sum(learn, tts)。
 
 运行（需 venv）：
-  venv\\Scripts\\python.exe parallel_test.py
+  venv/Scripts/python.exe parallel_test.py
 """
 import os
 import sys

@@ -219,6 +219,73 @@ class Consciousness:
         self._evaluate_sleep(st)
         return st
 
+    # ---------- 自发动作：把动画状态也注册成概念，由环境上下文驱动 ----------
+    def register_actions(self, actions: List[str]) -> None:
+        """把动作意图码注册为概念节点（如 [ACT_SIT]），先给基础强度方便早期扩散。"""
+        with self._lock:
+            for a in actions:
+                if not a:
+                    continue
+                # 直接以当前基础强度插入节点（setdefault 不会覆盖已有值）
+                self.graph.strength.setdefault(a, config.BASE_STRENGTH)
+                self.graph.activations.setdefault(a, 0.0)
+                self.graph.edges.setdefault(a, {})
+                self.graph.touch(a)
+
+    def spontaneous_action(
+        self,
+        context: List[str],
+        action_prefix: str = "[ACT_",
+    ) -> Tuple[str | None, float]:
+        """
+        根据环境上下文（时间/地点/玩家状态等概念种子）做快速扩散激活，
+        返回概率最高的动作意图码（如 [ACT_SIT]）及其概率。不调用 LLM，纯图计算。
+        """
+        seeds = [c for c in context if c]
+        if not seeds:
+            return None, 0.0
+        self._join_pending_learn()
+        with self._lock:
+            seed_energy = {c: 1.0 + self.mem.salience(c) for c in seeds}
+            activation = self.graph.spread_activation(seed_energy, self.mem)
+            salience = {c: self.mem.salience(c) for c in activation}
+            probs, _ = self.prob.build_distribution(
+                activation, salience, self.mem.total_observations()
+            )
+            action_probs = {c: p for c, p in probs.items() if c.startswith(action_prefix)}
+            if not action_probs:
+                return None, 0.0
+            best = max(action_probs.items(), key=lambda kv: kv[1])
+            # 刷新相关概念近因时间戳（高频动作自然不被遗忘）
+            self.graph.touch_many([best[0]] + seeds)
+            return best[0], float(best[1])
+
+    def reinforce_action(
+        self,
+        action: str,
+        context: List[str],
+        success: bool = True,
+        amount: float | None = None,
+    ) -> None:
+        """
+        动作执行反馈：成功则强化 context↔action 的边；失败则弱化，避免对着空气重复执行。
+        同时刷新 last_active，让高频习惯动作留在记忆里。
+        """
+        if not action or not context:
+            return
+        amt = amount if amount is not None else config.REINFORCE_EDGE
+        self._join_pending_learn()
+        with self._lock:
+            self.graph.touch(action)
+            self.graph.touch_many(context)
+            for c in context:
+                if not c or c == action:
+                    continue
+                if success:
+                    self.graph.link(c, action, amt)
+                else:
+                    self.graph.weaken(c, action, amt * 0.5)
+
     # ---------- 睡眠状态机（性能触发） ----------
     def _evaluate_sleep(self, st: ConsciousState) -> None:
         """

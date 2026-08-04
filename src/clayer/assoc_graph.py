@@ -65,6 +65,21 @@ class AssocGraph:
         self._prune_node(b)
         self._invalidate_sim_cache()   # A优化：边成员变化，相似度缓存失效
 
+    def weaken(self, a: str, b: str, amount: float = config.REINFORCE_EDGE) -> None:
+        """弱化 a、b 之间的关联(共现统计 -= amount，最低到 0 并清理)。"""
+        if not a or not b or a == b:
+            return
+        for x, y in ((a, b), (b, a)):
+            nbrs = self.edges.get(x)
+            if not nbrs or y not in nbrs:
+                continue
+            nbrs[y] = max(0.0, nbrs[y] - amount)
+            if nbrs[y] < 1e-4:
+                del nbrs[y]
+        self._prune_node(a)
+        self._prune_node(b)
+        self._invalidate_sim_cache()
+
     def link_group(self, concepts: List[str], amount: float = config.REINFORCE_EDGE) -> None:
         """一组同时出现的概念两两建立/强化关联(共现，袋式平权)。"""
         uniq = list(dict.fromkeys([c for c in concepts if c]))

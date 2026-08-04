@@ -61,6 +61,11 @@ class SymbolicWorldState:
         self.seen_ids: Set[str] = set()             # 曾经见过的物体(新颖度判定)
         self.visited_ids: Set[str] = set()          # 探索时走近过的(避免来回打转)
         self._percept_ts: float = 0.0
+        # 3D 环境刺激（Unity 推来的符号刺激，如["玩家接近","社交"]）
+        self._recent_stimuli: List[dict] = []
+        self._stimuli_ts: float = 0.0
+        self.player_near: bool = False
+        self.player_near_ts: float = 0.0
 
     # ----- 区域(预加载) -----
     def on_region(self, region_id: str, loaded: bool):
@@ -110,6 +115,27 @@ class SymbolicWorldState:
                 self.objects[oid] = rec
             self._percept_ts = now
             self._purge_stale(now)
+
+    # ----- 3D 环境刺激（Unity Raycast 接近 / 玩家行为）-----
+    def on_stimuli(self, stimuli: list, weight: float = 0.5):
+        """来自 Unity 的符号刺激，如 ["玩家接近","社交"]。
+        记录到近期事件，供意识层联想（"好奇"概念被激活等）。
+        """
+        if not isinstance(stimuli, list):
+            return
+        with self._lock:
+            now = time.time()
+            for s in stimuli:
+                if isinstance(s, str) and s:
+                    self._recent_stimuli.append(
+                        {"text": s, "weight": float(weight), "ts": now})
+            # 只保留最近 50 条
+            self._recent_stimuli = self._recent_stimuli[-50:]
+            # 玩家接近 → 让小念"看见"玩家存在
+            if any("玩家接近" in s or "社交" in s for s in stimuli):
+                self.player_near = True
+                self.player_near_ts = now
+            self._stimuli_ts = now
 
     def _purge_stale(self, now: float):
         """（须在持锁状态下调用）丢弃超过保鲜期没再被感知到的物体。"""

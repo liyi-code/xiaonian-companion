@@ -502,6 +502,10 @@ class Assistant:
         system_prompt 会据此把“小念在 3D 世界里实时感知到的环境”告诉她，使对话也能结合世界。"""
         self._world_provider = fn
 
+    def set_persona(self, persona: str):
+        """注入角色人格设定（如村民职业）。仅追加到 system_prompt 前缀，不改通用大脑链路。"""
+        self._persona = (persona or "").strip()
+
     def set_api(self, api_key=None, base_url=None, model=None):
         """运行时更换 API（密钥 / 接口地址 / 模型）：重建 OpenAI 客户端，无需重启。"""
         if api_key is not None:
@@ -616,9 +620,10 @@ class Assistant:
             + (self.emotion.prompt_fragment() if self.emotion else "")
             + f"下面是你已经了解到的关于用户的信息：\n{(memory or self.memory).profile_text()}\n"
             + world_ctx
+            + (f"\n[你的角色设定] {self._persona}\n" if getattr(self, "_persona", "") else "")
         )
 
-    def chat(self, user_text, on_tool=None, session=None, on_token=None):
+    def chat(self, user_text, on_tool=None, session=None, on_token=None, on_conscious=None):
         """对话入口。
 
         session 为 None 时用主人的全局会话（桌面窗口）。bot 接入时，会为每个
@@ -634,7 +639,7 @@ class Assistant:
         _user_chat_active = True
         try:
             with session.lock:
-                result = self._chat(user_text, on_tool, session, on_token)
+                result = self._chat(user_text, on_tool, session, on_token, on_conscious)
         finally:
             _user_chat_active = False
         # 对话后用原生 /api 接口把模型重新钉回常驻（keep_alive=-1 / Forever），
@@ -645,7 +650,7 @@ class Assistant:
             _ollama_keepalive_once(self.model)
         return result
 
-    def _chat(self, user_text, on_tool, session, on_token=None):
+    def _chat(self, user_text, on_tool, session, on_token=None, on_conscious=None):
         mem = session.memory
 
         # —— 检索增强：用户这句话先入「归档」（仅归档、不进 recent_history），
@@ -757,6 +762,12 @@ class Assistant:
                 if self.mind is not None:
                     try:
                         cl_state = self.mind.think(user_text)
+                        # —— 意识层快照回调：把"多念竞争"结果透给下游（Unity 等前端）——
+                        if on_conscious is not None:
+                            try:
+                                on_conscious(cl_state)
+                            except Exception:
+                                pass
                         # —— 睡眠机制（性能触发 / 用户手动）——
                         # 强制睡眠：遍历耗时超阈值 -> 输出固定陈述句、停止生成、压缩整合记忆后保存
                         if cl_state.sleep_signal == "forced_sleep":

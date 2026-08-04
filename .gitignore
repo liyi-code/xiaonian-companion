@@ -64,3 +64,10 @@ find_gguf.ps1
 启动_llamacpp_cuda.bat
 # Xiyu Live2D 模型为非商用授权，公开仓库仅保留可商用 hiyori_pro
 assets/live2d/Xiyu/
+
+# Unity 构建产物（不入库，仅保留源码 Assets/Scripts 与 ProjectSettings）
+unity_project/Library/
+unity_project/Temp/
+unity_project/Logs/
+unity_project/UserSettings/
+unity_project/.agents/

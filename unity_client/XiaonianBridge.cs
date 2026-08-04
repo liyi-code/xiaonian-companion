@@ -1,4 +1,13 @@
 /*
+ * 【已废弃 / 单 NPC 旧版】
+ * 本文件是「单 NPC」时代的客户端桥。多 NPC 版本请改用：
+ *   - BridgeHub.cs    （单一 WebSocket 连接 + 按 npc_id 路由）
+ *   - NpcManager.cs   （管理多个 NPC 的 VRM 实例）
+ *   - NpcAgent.cs     （单个 NPC 的行为：对话/表情/动作/语音/任务）
+ *   - SymbolicPerception.cs / AgentController.cs / QuestSystem.cs / TaskTrigger.cs
+ * 保留本文件仅作协议参考，不要再挂到场景里（会和 BridgeHub 抢同一个 WebSocket 端口）。
+ *
+ * ───────────────────────── 旧版说明（单 NPC）─────────────────────────
  * 小念 ⇄ Unity(VRM) 客户端桥。
  *
  * 依赖：
