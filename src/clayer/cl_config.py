@@ -28,6 +28,9 @@ STRENGTH_K = 1.0               # 强度标定系数
 # STRENGTH_REF 归一化基准对齐人类语义网「平均度数≈13」(Steyvers & Tenenbaum 2005)：
 # 取 14 使强度分数刻度贴近真实语义网连接密度（12 -> 14）。
 STRENGTH_REF = 14.0            # 强度归一化参考：强度分数 = min(1, S/REF)，喂给解锁能量（渐变不早饱和）
+# 动作概念（[ACT_xxx]）注册进意识层时的初始强度。需 >0 才能被 spread_activation 当作候选节点，
+# 否则 register_actions 引用的 BASE_STRENGTH 缺失会导致动作注册失败、自发动作永远哑火成 [ACT_IDLE]。
+BASE_STRENGTH = 1.0            # 新注册动作节点的初始基础强度（与 STRENGTH_K 同级，给扩散激活一个起点）
 STRENGTH_ASSOC_MIN = 0.05      # 关联边权重达到此值才计入"关联数"（滤掉弱噪声边）
 SIM_THRESHOLD = 0.25           # 相似度(Jaccard 共享邻居)达到此值才算"相似"
 COMPOSE_BONUS = 0.15           # 事件强度：词越多事件越强，每多一词额外 +(n-1)*BONUS 倍

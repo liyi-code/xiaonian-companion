@@ -291,7 +291,13 @@ class AssocGraph:
         cb = mem.count(b)
         denom = ca + cb - co
         if denom <= 0:
-            return 0.0
+            # 动作概念(如 [ACT_SIT])或场景物体词(如 椅子)往往不进入 mem 词频统计，
+            # 导致 denom<=0 而被误判为 0 权重——这会让"记忆-动作闭环"永远哑火、
+            # 自发动作只能走兜底 [ACT_IDLE]。只要确有共现边(co>0，即被 feedback 强化过)，
+            # 就给一个正传导权重，让扩散激活能解锁该动作节点（保底分母=co，即只靠共现）。
+            if co <= 0:
+                return 0.0
+            denom = max(1e-6, co)
         return co / denom
 
     def neighbors(self, a: str) -> List[Tuple[str, float]]:

@@ -226,9 +226,10 @@ class Consciousness:
             for a in actions:
                 if not a:
                     continue
-                # 直接以当前基础强度插入节点（setdefault 不会覆盖已有值）
+                # 直接以当前基础强度插入节点（setdefault 不会覆盖已有值）。
+                # 注意：AssocGraph 不存 activations（那是 spread_activation 的返回值），
+                # 只需初始化 strength + edges 并 touch 刷新近因时间戳。
                 self.graph.strength.setdefault(a, config.BASE_STRENGTH)
-                self.graph.activations.setdefault(a, 0.0)
                 self.graph.edges.setdefault(a, {})
                 self.graph.touch(a)
 
