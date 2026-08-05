@@ -16,6 +16,7 @@
 - [快速开始](#-快速开始本地-ollama)
 - [配置详解](#-配置详解)
 - [意识层（clayer）架构](#-意识层clayer架构)
+- [性格与情感如何驱动动作](#-性格与情感如何驱动动作)
 - [目录结构](#-目录结构)
 - [常见问题](#-常见问题)
 - [版权与声明](#-版权与声明)
@@ -30,8 +31,12 @@
 - 💾 **检索增强记忆（RAG）+ 长对话压缩**：聊再久也不丢上下文、不前后矛盾
 - 🛠 **主动关心 + 受约束自主权限**：只在白名单内自调参（如更频繁提醒休息），绝不碰系统 / 代码 / 你的文件
 - 🎭 **Live2D 形象**：官方免费可商用模型 hiyori_pro，实时口型、表情、动作
+- 🤖 **Unity 3D 形象（含程序化动画）**：VRM 角色由 `ConceptStateMachine.cs` 驱动，呼吸/挺直/挥手/点头/环顾/转身/立正，带阻尼平滑，不依赖外部动画师
+- 💞 **性格 × 情感驱动动作**：小念有 5 种性格（温柔/活泼/傲娇/敏感/黏人）+ 5 维情绪；**动作的速度、幅度、身体倾向、招牌小动作都由“当下情绪×性格”实时融合决定**（详见[下文](#-性格与情感如何驱动动作)）
 - 🔊 **可选语音**：本地 GPT-SoVITS 克隆音色（默认关，可不开）
 - 🖥 **屏幕陪伴 + 多模态视觉**：感知你在用什么软件、甚至“看懂”屏幕画面
+- 🧩 **NPC 预加载 + 自主行动**：立绘/语音首连前预热；待机久了会自己动、看你用电脑久了主动搭话、受约束地自调参（作息/提醒）
+- 🔗 **数据 + 截屏联合理**：程序级（窗口/进程/用时）+ 像素级（视觉模型看懂画面）双通道感知，一起喂给小念
 - 💬 **可接入 QQ / 微信**：让她用自己账号陪你聊
 - 📂 **帮你操作电脑**：开软件、搜文件、建计划 / 笔记文件
 
@@ -161,20 +166,60 @@
 
 ```
 ai-girlfriend-local/
-├─ src/                # 程序源码（assistant / gui / live2d / clayer 意识层 / tools …）
+├─ src/                # 程序源码（assistant / bridge / emotion / memory / clayer 意识层 / tools …）
+│  ├─ clayer/         # 意识层（联想/注意力/遗忘/价值导向，不改模型权重）
+│  ├─ villagers.py    # NPC 引擎：预加载、立绘/语音预热
+│  ├─ town.py / quest.py  # 小镇世界状态 + 任务系统
+│  └─ explorer.py     # 自主探索与自发行为
+├─ unity_project/     # Unity 工程（VRM 角色 + 程序化动画）
+│  └─ Assets/Scripts/ # ConceptStateMachine / NpcBridgeClient / NpcBodyCollider …
 ├─ assets/live2d/     # Live2D 模型（hiyori_pro，已含，可商用）
 ├─ onebot/            # QQ 接入示例
-├─ docs/              # 额外文档
+├─ docs/              # 额外文档（含「架构与数据流」）
 ├─ .env.example       # 配置模板（已默认本地 Ollama）
 ├─ requirements.txt   # Python 依赖
 ├─ 启动.bat           # 一键启动（建 venv / 装依赖 / 生成 .env）
 ├─ SETUP.md           # 详细部署指南
+├─ SESSION_NOTES.md   # 项目总览快照
 ├─ README.md
 └─ LICENSE
 ```
 
 > 运行时生成的 `data/`（聊天记录、记忆、状态）、`venv/`、`models/`、`personal_backup_*/` 等
 > 已被 `.gitignore` 忽略，不会进入仓库。
+
+---
+
+## 💞 性格与情感如何驱动动作
+
+小念不是“一套固定动作循环”。她的肢体风格由**情绪（情感）× 性格**两层实时融合决定：
+
+- **情绪（5 维：joy/anger/sadness/calm/anxiety）**：`joy`（兴奋度）直接调制动作快慢与大小——开心时挥手更快更大，低落时更慢更小。
+- **性格（5 种：温柔平静 / 活泼开心 / 傲娇小脾气 / 敏感爱哭 / 黏人紧张）**：由情绪长期累计差值派生，决定**动作风格**而非内容：
+
+| 性格 | 动作风格 | 身体倾向（lean） | 招牌小动作（micro） |
+|---|---|---|---|
+| 活泼开心 | 轻快、幅度大 | 略前倾 | 爱挥手 |
+| 黏人紧张 | 中等速度、略小幅 | 明显前倾（靠近） | 倾向跟随/靠近 |
+| 傲娇小脾气 | 略快、小幅甩动 | 后缩（别过脸） | 偶尔转身 |
+| 敏感爱哭 | 最慢、最小幅 | 明显后缩、低头 | — |
+| 温柔平静 | 舒缓、克制 | 中性略后 | — |
+
+**数据流（端到端）**：
+
+```
+对话/事件 → emotion.motion_params()  [emotion.py]
+   = 当前性格的 {speed_mul, amplitude_mul, lean, micro}
+→ bridge.compute_action_params(brain)  [bridge.py]
+   = 融合 joy×性格 → {speed, amplitude, lean, trait, micro}
+→ WebSocket action 事件（带 trait/lean 字段）
+→ NpcBridgeClient.cs 转发
+→ ConceptStateMachine.TriggerAction(name, dur, speed, amp, trait, lean)
+   = 把 lean 折算进骨骼（上臂前举 / 上身前倾），micro 影响普通聊天兜底动作
+→ Unity 角色演出带“性格”的肢体语言
+```
+
+> 性格只改**演出风格**，永远不改变底层目的（让使用者生活越来越好，健康护栏不变）。
 
 ---
 

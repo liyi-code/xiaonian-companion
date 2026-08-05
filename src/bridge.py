@@ -49,7 +49,9 @@ from villagers import default_spawns, preset_by_id
 # 默认动作意图码（Unity 端需实现同名的动画/状态机触发）
 DEFAULT_ACTIONS = [
     "[ACT_IDLE]",       # 待机
-    "[ACT_LOOKAROUND]", # 环顾
+    "[ACT_LOOKAROUND]", # 环顾（小幅左右看）
+    "[ACT_TURN]",       # 转身（整圈 180° 面向身后）
+    "[ACT_STAND]",      # 立正（回正直立姿态）
     "[ACT_WAVE]",       # 招手
     "[ACT_SIT]",        # 坐下
     "[ACT_WALK]",       # 随意走动
@@ -124,12 +126,19 @@ class _HostStub:
 # 极简动作识别（与 gui._detect_action 思路一致，仅取最常用的几条）
 # 游戏端据此触发动画状态机；没有对应动画也不影响对话。
 # --------------------------------------------------------------------------- #
+# 动作关键词 → Unity 端 Animator 的 ACT_* 触发器名（与 NpcController.controller 对齐）
 _ACTION_KEYWORDS = [
-    ("jump", ("跳", "蹦", "跳起来")),
-    ("turn", ("转身", "转过去", "转个身")),
-    ("wave", ("挥手", "招手", "嗨")),
-    ("pat", ("摸摸头", "摸头", "拍拍")),
-    ("nod", ("点头", "嗯嗯")),
+    # 打招呼/告别统一触发挥手（含常见问候语，避免"你好"也点头）
+    ("ACT_WAVE", ("挥手", "招手", "拜拜", "再见", "嗨", "哈喽", "你好", "您好",
+                  "早上好", "晚上好", "中午好", "下午好", "晚安", "在吗", "在干嘛",
+                  "打招呼", "摇手", "拜", "see you")),
+    ("ACT_RUN", ("跳", "蹦", "跳起来", "跑", "奔跑", "冲")),
+    ("ACT_TURN", ("转身", "转过去", "转个身", "转过去背对我")),
+    ("ACT_LOOKAROUND", ("环顾", "看四周", "左右看", "东张西望")),
+    ("ACT_POINT", ("指", "指向", "那边", "这里", "看那里")),
+    ("ACT_SIT", ("坐", "坐下", "休息一下", "歇会儿")),
+    ("ACT_STAND", ("立正", "站好", "站直", "别动", "停下", "停住")),
+    ("ACT_FOLLOW", ("跟", "跟着我", "过来", "跟上来")),
 ]
 
 
@@ -140,6 +149,62 @@ def detect_action(text):
         if any(k in text for k in kws):
             return name
     return None
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def compute_action_params(brain):
+    """把「情感(joy 兴奋度) × 性格(trait 肢体偏好)」融合成动作参数。
+
+    返回 dict：speed / amplitude / trait / lean / micro / desc。
+    - 情感 joy 决定基础快慢大小（开心→更快更大）；
+    - 性格乘率再塑形（活泼→更轻快大幅、敏感→更慢更小…）；
+    两者都进 Unity，让小念的肢体风格随性格+当下心情一起变。
+    """
+    joy = 0.0
+    trait = "温柔平静"
+    mp = None
+    emo = getattr(brain, "emotion", None)
+    if emo is not None:
+        # emo 可能是 EmotionEngine 实例，也可能是裸情绪 dict，两种都兼容
+        if hasattr(emo, "motion_params"):
+            # EmotionEngine：joy 在其内部 emotion 字典里
+            try:
+                joy = float(getattr(emo, "emotion", {}).get("joy", 0.0))
+            except Exception:
+                joy = 0.0
+            try:
+                mp = emo.motion_params()
+            except Exception:
+                mp = None
+        else:
+            # 裸 dict：直接当情绪读取
+            try:
+                joy = float(emo.get("joy", 0.0))
+            except Exception:
+                joy = 0.0
+    joy = _clamp(joy, 0.0, 1.0)
+    if mp is None:
+        from emotion import motion_params_for
+        mp = motion_params_for(trait)
+        mp["trait"] = trait
+
+    # 情感基础：0.3 慢悠悠 ~ 1.0 兴奋（与原逻辑一致）
+    base_speed = 0.3 + joy * 0.7
+    base_amp = 0.7 + joy * 0.3
+    # 性格塑形
+    speed = round(_clamp(base_speed * mp.get("speed_mul", 1.0), 0.2, 1.5), 2)
+    amplitude = round(_clamp(base_amp * mp.get("amplitude_mul", 1.0), 0.5, 1.4), 2)
+    return {
+        "speed": speed,
+        "amplitude": amplitude,
+        "trait": mp.get("trait", trait),
+        "lean": round(float(mp.get("lean", 0.0)), 3),
+        "micro": list(mp.get("micro", []) or []),
+        "desc": mp.get("desc", ""),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -175,10 +240,9 @@ class GameBridge:
         self.npcs = {}                  # npc_id -> NPCBrain
         # —— 小镇（我的世界村庄式自给自足小镇）：全局唯一，所有 NPC 共享 ——
         self.town = TownSim(self._broadcast)
-        # 向后兼容：没有显式 spawn 时，默认存在一个 "default" NPC（即原来的单 NPC 行为）
-        if auto_default:
-            self.spawn_npc("default", CONFIG.get("name", "小念"))
-        # 自动按预设 spawn 村民，构成完整生存链的「多人小镇」
+        # 注意：不再额外 spawn 一个 "default" NPC——小念已由 villagers 的
+        # "xiaonian" 预设提供，避免与场景里的 NPC_xiaonian 重复出两个小念。
+        # 自动按预设 spawn 村民（已限制为 3 个：小念 + kai + roe），构成多人小镇
         if CONFIG.get("town_auto_spawn", True):
             for p in default_spawns():
                 self.spawn_npc(p["npc_id"], p["name"], role=p["role"],
@@ -226,9 +290,15 @@ class GameBridge:
     async def _safe_send(ws, data):
         try:
             await ws.send(data)
-        except Exception:
-            # 连接已关闭等：静默丢弃，不刷异常噪声
-            pass
+            # 仅对 action 类消息做确认日志，避免刷屏
+            try:
+                _d = json.loads(data)
+                if _d.get("type") in ("action", "action_intent"):
+                    print(f"[桥] [_safe_send] 已发出 {_d.get('type')}:{_d.get('name', _d.get('action'))}", flush=True)
+            except Exception:
+                pass
+        except Exception as _e:
+            print(f"[桥] [_safe_send] 发送失败: {_e}", flush=True)
 
     def _push(self, ws, msg: dict):
         # 注意：回调可能在 executor 线程里触发，那里没有“当前 loop”，
@@ -237,7 +307,11 @@ class GameBridge:
         if loop is None:
             return
         data = json.dumps(msg, ensure_ascii=False)
-        loop.call_soon_threadsafe(asyncio.ensure_future, self._safe_send(ws, data))
+        # 用线程安全的方式调度协程，比 call_soon_threadsafe(ensure_future, ...) 更可靠
+        try:
+            asyncio.run_coroutine_threadsafe(self._safe_send(ws, data), loop)
+        except Exception as _e:
+            print(f"[桥] _push 调度失败: {_e}", flush=True)
 
     def _broadcast(self, msg: dict):
         with self._lock:
@@ -247,16 +321,67 @@ class GameBridge:
                 except Exception:
                     pass
 
+    async def _restlessness_heartbeat(self, ws, npc_id):
+        """周期性下发躁动度，驱动 Unity 叠加层（呼吸/转头频率）。
+        无聊时低，长时间无对话→略升（期待/等待感）。聊天时重置计时。"""
+        import time as _time
+        self._last_chat_by_npc = getattr(self, "_last_chat_by_npc", {})
+        try:
+            while True:
+                await asyncio.sleep(4.0)
+                brain = self.npcs.get(npc_id)
+                base = 0.2
+                last = self._last_chat_by_npc.get(npc_id, _time.time())
+                try:
+                    joy = float(getattr(brain, "emotion", {}).get("joy", 0.0)) if brain else 0.0
+                    idle = min(1.0, (_time.time() - last) / 60.0)  # 60s 内从 0→1
+                    rest = max(0.0, min(1.0, base + joy * 0.4 + idle * 0.4))
+                except Exception:
+                    rest = base
+                self._push(ws, {"type": "restlessness",
+                                "value": round(rest, 2), "npc_id": npc_id})
+        except asyncio.CancelledError:
+            pass
+
     # ----- 处理一条用户输入（在 executor 线程里跑，避免阻塞事件循环）-----
     def _handle_user_input(self, ws, text, npc_id="default"):
         text = (text or "").strip()
+        print(f"[桥] [_handle_user_input] npc_id={npc_id} raw_text={text!r}", flush=True)
         if not text:
+            print(f"[桥] [_handle_user_input] 输入为空，直接返回", flush=True)
             return
         print(f"[桥] 收到来自 {npc_id} 的输入: {text[:80]}", flush=True)
         brain = self.npcs.get(npc_id) or self.spawn_npc(npc_id)
+        # 聊天发生：重置躁动度计时（刚聊完不显得“等得着急”）
+        try:
+            import time as _t
+            self._last_chat_by_npc = getattr(self, "_last_chat_by_npc", {})
+            self._last_chat_by_npc[npc_id] = _t.time()
+        except Exception:
+            pass
+
+        # 先给 Unity 一个即时的肢体反馈：
+        # - 命中动作关键词（打招呼/再见/转身/过来…）→ 对应动作
+        # - 未命中（普通聊天）→ 发轻量“点头/反应”(ACT_NOD)，不再一律挥手，
+        #   避免“不管说什么都挥手”的怪异感；角色靠说话律动表达其余情绪
+        # 动作带 speed/amplitude/lean/trait：由「情感(joy) × 性格(trait)」融合，
+        # 让小念的肢体风格随性格与当下心情一起变（见 emotion.TRAIT_MOTION）。
+        quick_action = detect_action(text)
+        if not quick_action:
+            quick_action = "ACT_NOD"
+        ap = compute_action_params(brain)
+        print(f"[桥] [{npc_id}] 先下发即时动作: {quick_action} "
+              f"(trait={ap['trait']} joy→speed={ap['speed']} amp={ap['amplitude']})", flush=True)
+        self._push(ws, {"type": "action", "name": quick_action,
+                        "duration": 1.5, "speed": ap["speed"],
+                        "amplitude": ap["amplitude"], "lean": ap["lean"],
+                        "trait": ap["trait"], "npc_id": npc_id})
 
         # 流式文本回调：小念每吐一个片段就实时推给游戏端（气泡/字幕）
+        token_count = [0]
+
         def on_token(piece):
+            token_count[0] += 1
             self._push(ws, {"type": "token", "text": piece, "npc_id": npc_id})
 
         def on_tool(name, args, result):
@@ -264,54 +389,6 @@ class GameBridge:
                             "result": str(result)[:500], "npc_id": npc_id})
 
         # 意识层涟漪：think() 产出的多念竞争结果，实时推给游戏端驱动行为/可视化
-        def on_conscious(state):
-            try:
-                self._push(ws, {
-                    "type": "conscious",
-                    "npc_id": npc_id,
-                    "winner": state.winner,
-                    "picked": list(state.picked),
-                    "salient": {k: round(float(v), 3) for k, v in (state.salient or {}).items()},
-                })
-            except Exception:
-                pass
-
-        # 任务：对话可能触发接任务（规则判定，不依赖 LLM 回复，先判避免被 chat 阻塞）
-        try:
-            brain.quests.maybe_offer_from_dialogue(text)
-        except Exception:
-            pass
-
-        try:
-            reply = brain.assistant.chat(text, on_tool=on_tool, on_token=on_token,
-                                          on_conscious=on_conscious)
-        except Exception as e:
-            self._push(ws, {"type": "chat", "text": f"（出错了：{e}）", "npc_id": npc_id})
-            return
-
-        if not reply:
-            return
-
-        # 下发完整文字（Unity 用 chat 类型显示气泡/字幕）
-        self._push(ws, {"type": "chat", "npc_id": npc_id, "text": str(reply)})
-
-        # 当前情绪 5 维 → 表情状态（游戏端据此驱动 Blendshape）
-        # 推完整 5 维权重（英文维度名），供 Unity ExpressionController 直接映射
-        emotion_vec = None
-        dom = None
-        if brain.emotion is not None:
-            try:
-                ev = brain.emotion.emotion  # {joy,anger,sadness,calm,anxiety} 已 clamp[0,1]
-                emotion_vec = {k: round(float(ev.get(k, 0.0)), 3) for k in
-                               ("joy", "anger", "sadness", "calm", "anxiety")}
-                dom = brain.emotion.dominant()
-            except Exception:
-                emotion_vec = None
-                dom = None
-
-        # 动作识别 → 动画触发
-        action = detect_action(reply)
-
         # 意识层「多念竞争」快照：主念概念 + 多道并行念（注意力份额）
         # 通过 on_conscious 在 think() 后实时拿到 ConsciousState（见 assistant._chat）
         def on_conscious(state):
@@ -335,6 +412,67 @@ class GameBridge:
             except Exception:
                 pass
 
+        # 任务：对话可能触发接任务（规则判定，不依赖 LLM 回复，先判避免被 chat 阻塞）
+        try:
+            brain.quests.maybe_offer_from_dialogue(text)
+        except Exception:
+            pass
+
+        import time as _time
+        t0 = _time.time()
+        print(f"[桥] [{npc_id}] 收到输入，开始生成…", flush=True)
+        try:
+            reply = brain.assistant.chat(text, on_tool=on_tool, on_token=on_token,
+                                          on_conscious=on_conscious)
+        except Exception as e:
+            print(f"[桥] [{npc_id}] chat 异常：{e}", flush=True)
+            self._push(ws, {"type": "chat", "text": f"（出错了：{e}）", "npc_id": npc_id})
+            return
+        t1 = _time.time()
+        print(f"[桥] [{npc_id}] LLM 回复完成，耗时 {t1 - t0:.2f}s：{reply[:40]!r}", flush=True)
+
+        if not reply:
+            print(f"[桥] [{npc_id}] 回复为空，不继续 TTS/动作", flush=True)
+            return
+
+        # 下发完整文字（Unity 用 chat 类型显示气泡/字幕）
+        self._push(ws, {"type": "chat", "npc_id": npc_id, "text": str(reply)})
+
+        # 当前情绪 5 维 → 表情状态（游戏端据此驱动 Blendshape）
+        # 推完整 5 维权重（英文维度名），供 Unity ExpressionController 直接映射
+        emotion_vec = None
+        dom = None
+        if brain.emotion is not None:
+            try:
+                ev = brain.emotion.emotion  # {joy,anger,sadness,calm,anxiety} 已 clamp[0,1]
+                emotion_vec = {k: round(float(ev.get(k, 0.0)), 3) for k in
+                               ("joy", "anger", "sadness", "calm", "anxiety")}
+                dom = brain.emotion.dominant()
+            except Exception:
+                emotion_vec = None
+                dom = None
+
+        # 动作识别 → 动画触发
+        # 命中关键词用对应动作；否则按「性格 micro 倾向 → 情绪」给默认回应动作，
+        # 确保“对输入有反应”且动作类型也随性格变（黏人倾向靠近、傲娇倾向别过脸…）。
+        action = detect_action(reply)
+        if not action:
+            micro = []
+            try:
+                micro = brain.emotion.motion_params().get("micro", []) or []
+            except Exception:
+                pass
+            if micro:                       # 性格自带的招牌小动作优先
+                action = micro[0]
+            elif dom == "joy":
+                action = "ACT_WAVE"
+            else:
+                action = "ACT_LOOKAROUND"
+        print(f"[桥] [{npc_id}] 决定动作: {action} (dom={dom})", flush=True)
+        # 按字数估算动作/口型持续时间：中文约 4 字/秒，受 TTS 语速影响
+        speed = float(getattr(brain.tts, "speed", 1.0) or 1.0)
+        action_duration = min(max(len(reply.strip()) * 0.25 / max(speed, 0.1), 1.5), 8.0)
+
         # 语音合成：把每句 wav 字节推给游戏端播放（本机不发音）
         def on_play():
             # 开始说话：同时下发情绪(表情)与动作
@@ -342,23 +480,42 @@ class GameBridge:
                 self._push(ws, {"type": "emotion", "vector": emotion_vec,
                                 "dominant": dom, "npc_id": npc_id})
             if action:
-                self._push(ws, {"type": "action", "name": action, "npc_id": npc_id})
+                # 说话动作也带「情感×性格」融合参数，让肢体风格随性格变
+                _ap = compute_action_params(brain)
+                self._push(ws, {"type": "action", "name": action,
+                                "duration": round(action_duration, 2),
+                                "speed": _ap["speed"], "amplitude": _ap["amplitude"],
+                                "lean": _ap["lean"], "trait": _ap["trait"],
+                                "npc_id": npc_id})
             self._push(ws, {"type": "speech_start", "npc_id": npc_id})
 
         def on_audio(wav_bytes):
             b64 = base64.b64encode(wav_bytes).decode("ascii")
             self._push(ws, {"type": "audio", "wav": b64, "npc_id": npc_id})
 
+        t2 = _time.time()
         if brain.tts.is_ready():
+            print(f"[桥] [{npc_id}] 开始 TTS（语速={speed}，预估动作时长={action_duration:.1f}s）",
+                  flush=True)
             brain.tts.speak(reply, on_play=on_play, on_audio=on_audio)
             self._push(ws, {"type": "talk_stop", "npc_id": npc_id})
+            t3 = _time.time()
+            print(f"[桥] [{npc_id}] TTS/动作 总耗时 {t3 - t2:.2f}s，token 共 {token_count[0]} 个",
+                  flush=True)
         else:
             # 没配语音：仅文字（仍给情绪/动作，让肢体有反应）
             if emotion_vec:
                 self._push(ws, {"type": "emotion", "vector": emotion_vec,
                                 "dominant": dom, "npc_id": npc_id})
             if action:
-                self._push(ws, {"type": "action", "name": action, "npc_id": npc_id})
+                _ap = compute_action_params(brain)
+                self._push(ws, {"type": "action", "name": action,
+                                "duration": round(action_duration, 2),
+                                "speed": _ap["speed"], "amplitude": _ap["amplitude"],
+                                "lean": _ap["lean"], "trait": _ap["trait"],
+                                "npc_id": npc_id})
+            print(f"[桥] [{npc_id}] 无 TTS，已推文字/动作，token 共 {token_count[0]} 个",
+                  flush=True)
 
     # ----- 低频视觉快照：结合符号感知做「符号+像素」联合推理 -----
     def _handle_visual_snapshot(self, msg, npc_id="default"):
@@ -444,6 +601,10 @@ class GameBridge:
         self._loop = asyncio.get_running_loop()
         with self._lock:
             self._clients.add(ws)
+        # 连接成功日志（第一关自查用：Unity 连上时此处必须打印 Client connected）
+        peer = getattr(ws, "remote_address", None)
+        print(f"[桥] Client connected（当前连接数={len(self._clients)}，来自 {peer}）",
+              flush=True)
         # ready 事件携带当前所有 NPC 列表，Unity 据此实例化 Agent
         with self._lock:
             npc_list = [{"npc_id": k, "name": v.name,
@@ -452,6 +613,12 @@ class GameBridge:
         self._push(ws, {"type": "ready",
                         "name": CONFIG.get("name", "小念"),
                         "npcs": npc_list})
+        # 躁动度(restlessness)心跳：每 4 秒下发一次，驱动 Unity 叠加层
+        # （呼吸频率/转头频率）。无聊→低，长时间未对话→偏高期待。
+        # 连接建立时还不知道后续消息里的 npc_id，先取当前第一个 NPC 作为默认。
+        with self._lock:
+            default_npc_id = next(iter(self.npcs.keys()), "default")
+        rest_task = asyncio.ensure_future(self._restlessness_heartbeat(ws, default_npc_id))
         # 连接即下发当前小镇状态（村庄面板/建筑/村民），Unity 据此渲染村庄
         try:
             self.town._broadcast_state()
@@ -466,6 +633,8 @@ class GameBridge:
                 mtype = msg.get("type")
                 npc_id = msg.get("npc_id") or "default"
                 if mtype == "user_input":
+                    print(f"[桥] [ws] 收到 user_input npc_id={npc_id} text={msg.get('text','')[:40]!r}",
+                          flush=True)
                     # 在 executor 线程跑（chat 是阻塞的）
                     loop = asyncio.get_event_loop()
                     loop.run_in_executor(
@@ -578,9 +747,14 @@ class GameBridge:
                         if action is None or prob < threshold:
                             action = "[ACT_IDLE]"
                             prob = 0.0
+                        # 自发动作也带「情感×性格」融合的 speed/amplitude/trait/lean
+                        _ap = compute_action_params(brain)
                         self._push(ws, {"type": "action_intent", "npc_id": npc_id,
                                         "action": action, "prob": round(prob, 3),
-                                        "context": seeds})
+                                        "context": seeds,
+                                        "duration": round(min(max(2.5, prob * 6.0), 5.0), 2),
+                                        "speed": _ap["speed"], "amplitude": _ap["amplitude"],
+                                        "lean": _ap["lean"], "trait": _ap["trait"]})
 
                 # ---- 动作执行反馈：成功强化、失败弱化（避免对着空气重复） ----
                 elif mtype == "action_feedback":
@@ -630,12 +804,32 @@ class GameBridge:
         self.town.start()
         print(f"[桥] 小镇经济模拟已启动（{len(self.town.villagers)} 位村民，目标：自给自足）")
 
+        # 端口绑定：默认端口被占用时自动顺延，避免直接崩溃退出。
+        host, port = self.host, self.port
+        import socket as _socket
+        while True:
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            try:
+                _s.bind((host, port))
+                _s.close()
+                break  # 端口可用
+            except OSError:
+                _s.close()
+                if port == self.port:
+                    print(f"[桥] 警告：端口 {port} 已被占用（可能有旧 bridge 未退出），"
+                          f"自动顺延到 {port + 1} …")
+                port += 1
+                if port > self.port + 100:
+                    raise RuntimeError("找不到可用端口（已尝试 100 个）")
+        self.port = port  # 回写实际端口，供日志/客户端读取
+
         async def _serve_forever():
             # 注意：不能直接 asyncio.run(websockets.serve(...))——那样 serve 协程
             # 一返回事件循环就关闭，服务器“启动即退出”。必须挂起等待。
-            async with websockets.serve(self._on_connect, self.host, self.port):
+            async with websockets.serve(self._on_connect, host, port):
                 await asyncio.Future()   # 永久挂起，直到 Ctrl+C
 
+        print(f"[桥] 实际监听地址：ws://{host}:{port}")
         try:
             asyncio.run(_serve_forever())
         except KeyboardInterrupt:

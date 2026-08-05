@@ -1,6 +1,7 @@
 import json
 import re
 import threading
+import time
 from openai import OpenAI
 from config import CONFIG
 from memory import Memory
@@ -761,7 +762,9 @@ class Assistant:
                 bias = None
                 if self.mind is not None:
                     try:
+                        t_think_0 = time.time()
                         cl_state = self.mind.think(user_text)
+                        print(f"[assistant] 意识层 think 完成，耗时 {time.time() - t_think_0:.2f}s", flush=True)
                         # —— 意识层快照回调：把"多念竞争"结果透给下游（Unity 等前端）——
                         if on_conscious is not None:
                             try:
@@ -823,7 +826,10 @@ class Assistant:
                 for m in mem.recent_history(CONFIG.get("history_turns", 16)):
                     messages.append({"role": m["role"], "content": m["content"]})
                 messages.append({"role": "user", "content": user_text})
+                t_llm_0 = time.time()
                 reply = self._run_with_tools(messages, on_tool, mem, logit_bias=bias, on_token=on_token)
+                print(f"[assistant] LLM 生成完成，耗时 {time.time() - t_llm_0:.2f}s，长度={len(reply)}",
+                      flush=True)
 
                 # —— 后台触发长期记忆压缩（不打断当前回复；用户正在聊就跳过本轮）——
                 try:

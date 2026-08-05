@@ -22,15 +22,18 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.Networking;
 
 [Serializable]
+[RequireComponent(typeof(NpcBodyCollider))]
 public class NpcBridgeClient : MonoBehaviour
 {
     [Header("连接")]
@@ -55,6 +58,8 @@ public class NpcBridgeClient : MonoBehaviour
     private CancellationTokenSource _cts;
     private bool _connected;
 
+    public bool IsConnected => _connected;
+
     // 打字机缓冲
     private string _pendingText = "";
     private float _typeTimer;
@@ -76,8 +81,37 @@ public class NpcBridgeClient : MonoBehaviour
             else
                 npcId = gameObject.name;
         }
+
+        // 防重复：同一个 GameObject 上出现多个 NpcBridgeClient 时只保留一个
+        var all = GetComponents<NpcBridgeClient>();
+        if (all.Length > 1)
+        {
+            int myIndex = Array.IndexOf(all, this);
+            bool otherHasRealId = false;
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (i == myIndex) continue;
+                if (!string.IsNullOrEmpty(all[i].npcId) && all[i].npcId != "default")
+                    otherHasRealId = true;
+            }
+            if (otherHasRealId && (string.IsNullOrEmpty(npcId) || npcId == "default"))
+            {
+                Debug.LogWarning($"[NpcBridge:{npcId}] 检测到重复组件，销毁本组件");
+                Destroy(this);
+                return;
+            }
+            if (myIndex > 0 && !otherHasRealId)
+            {
+                Debug.LogWarning($"[NpcBridge:{npcId}] 检测到重复组件，保留第一个");
+                Destroy(this);
+                return;
+            }
+        }
+
         if (expression == null) expression = GetComponentInChildren<ExpressionController>();
         if (stateMachine == null) stateMachine = GetComponentInChildren<ConceptStateMachine>();
+        if (stateMachine == null) stateMachine = gameObject.AddComponent<ConceptStateMachine>();
+
         ConnectAsync();
     }
 
@@ -85,6 +119,9 @@ public class NpcBridgeClient : MonoBehaviour
     {
         try
         {
+            // 多个 NPC 同时连同一端口容易触发 Aborted，错开 0~900ms
+            await Task.Delay(Math.Abs(npcId.GetHashCode()) % 900);
+
             _ws = new ClientWebSocket();
             _cts = new CancellationTokenSource();
             await _ws.ConnectAsync(new Uri(wsUrl), _cts.Token);
@@ -92,17 +129,26 @@ public class NpcBridgeClient : MonoBehaviour
             Debug.Log($"[NpcBridge:{npcId}] 已连接 {wsUrl}");
             // 告诉 Python 我是谁（触发 spawn_npc）
             SendJson(new Dictionary<string, object> { { "type", "hello" }, { "npc_id", npcId } });
-            // 收消息循环
+            // 收消息循环：正确处理分段消息（音频/长文本不会越界）
             var buf = new byte[8192];
             while (_ws.State == WebSocketState.Open && !_cts.IsCancellationRequested)
             {
-                var seg = new ArraySegment<byte>(buf);
-                var res = await _ws.ReceiveAsync(seg, _cts.Token);
-                if (res.MessageType == WebSocketMessageType.Close) break;
-                int len = res.Count;
-                string msg = Encoding.UTF8.GetString(buf, 0, len);
-                // 回到主线程处理（WebSocket 回调在 IO 线程）
-                UnityMainThreadDispatcher.Enqueue(() => OnMessage(msg));
+                using (var ms = new MemoryStream())
+                {
+                    WebSocketReceiveResult res;
+                    do
+                    {
+                        var seg = new ArraySegment<byte>(buf);
+                        res = await _ws.ReceiveAsync(seg, _cts.Token);
+                        if (res.MessageType == WebSocketMessageType.Close) break;
+                        ms.Write(buf, 0, res.Count);
+                    } while (!res.EndOfMessage);
+
+                    if (res.MessageType == WebSocketMessageType.Close) break;
+                    string msg = Encoding.UTF8.GetString(ms.ToArray());
+                    // 回到主线程处理（WebSocket 回调在 IO 线程）
+                    UnityMainThreadDispatcher.Enqueue(() => OnMessage(msg));
+                }
             }
         }
         catch (Exception e)
@@ -119,6 +165,20 @@ public class NpcBridgeClient : MonoBehaviour
             var doc = MiniJSON.Json.Deserialize(json) as Dictionary<string, object>;
             if (doc == null) return;
             string type = doc["type"] as string;
+            Debug.Log($"[NpcBridge:{npcId}] << 收到消息 type={type} npc_id={(doc.ContainsKey("npc_id") ? doc["npc_id"] : "无")} (本机npcId={npcId})");
+            // 躁动度(restlessness)：Python 可在任意消息携带，驱动呼吸/转头频率
+            // （无聊→低，等待/期待→高）。叠加层永远生效，独立于具体动作。
+            if (doc.ContainsKey("restlessness") && stateMachine != null)
+            {
+                try { stateMachine.SetRestlessness(Convert.ToSingle(doc["restlessness"])); }
+                catch { }
+            }
+            // 只处理发给自己的消息（广播类型如 ready 没有 npc_id，放行）
+            if (doc.ContainsKey("npc_id") && doc["npc_id"] is string targetId && targetId != npcId)
+            {
+                Debug.LogWarning($"[NpcBridge:{npcId}] 丢弃非本机消息: 收到 npc_id={targetId}, 本机={npcId} (type={type})");
+                return;
+            }
             switch (type)
             {
                 case "token":
@@ -152,8 +212,28 @@ public class NpcBridgeClient : MonoBehaviour
                     }
                     break;
                 case "action":
-                    if (stateMachine != null) stateMachine.TriggerAction(doc["name"] as string);
-                    break;
+                    {
+                        string name = doc["name"] as string;
+                        float dur = 0f;
+                        float speed = 1f;
+                        float amplitude = 1f;
+                        string trait = "";
+                        float lean = 0f;
+                        if (doc.ContainsKey("duration"))
+                            dur = Convert.ToSingle(doc["duration"]);
+                        if (doc.ContainsKey("speed"))
+                            speed = Convert.ToSingle(doc["speed"]);
+                        if (doc.ContainsKey("amplitude"))
+                            amplitude = Convert.ToSingle(doc["amplitude"]);
+                        if (doc.ContainsKey("trait"))
+                            trait = doc["trait"] as string ?? "";
+                        if (doc.ContainsKey("lean"))
+                            lean = Convert.ToSingle(doc["lean"]);
+                        Debug.LogError($"[NpcBridge:{npcId}] ★收到 action 事件: name={name} dur={dur} speed={speed} amp={amplitude} trait={trait} lean={lean} stateMachine={(stateMachine!=null)}");
+                        if (stateMachine != null) stateMachine.TriggerAction(name, dur, speed, amplitude, trait, lean);
+                        else Debug.LogWarning($"[NpcBridge:{npcId}] stateMachine 为 null，无法播放动作 {name}");
+                        break;
+                    }
                 case "speech_start":
                     if (stateMachine != null) stateMachine.OnSpeechStart();
                     break;
@@ -172,7 +252,14 @@ public class NpcBridgeClient : MonoBehaviour
                     Debug.Log($"[NpcBridge:{npcId}] 动作意图: {action} (prob={probStr})");
                     try
                     {
-                        if (stateMachine != null) stateMachine.TriggerAction(action);
+                        float dur = 0f, spd = 1f, amp = 1f, lean = 0f;
+                        string trait = "";
+                        if (doc.ContainsKey("duration")) dur = Convert.ToSingle(doc["duration"]);
+                        if (doc.ContainsKey("speed")) spd = Convert.ToSingle(doc["speed"]);
+                        if (doc.ContainsKey("amplitude")) amp = Convert.ToSingle(doc["amplitude"]);
+                        if (doc.ContainsKey("trait")) trait = doc["trait"] as string ?? "";
+                        if (doc.ContainsKey("lean")) lean = Convert.ToSingle(doc["lean"]);
+                        if (stateMachine != null) stateMachine.TriggerAction(action, dur, spd, amp, trait, lean);
                     }
                     catch (Exception ex)
                     {
@@ -188,9 +275,54 @@ public class NpcBridgeClient : MonoBehaviour
         }
     }
 
+    // ---- 本地关键词动作（与 Python 的 detect_action 保持一致）----
+    private string LocalDetectAction(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+        var t = text.ToLowerInvariant();
+        var greetings = new string[] {
+            "你好", "您好", "早上好", "晚上好", "中午好", "下午好", "晚安",
+            "在吗", "在干嘛", "嗨", "哈喽", "hello", "hi", "拜拜", "再见",
+            "挥手", "招手", "打招呼", "摇手", "拜"
+        };
+        foreach (var g in greetings)
+            if (t.Contains(g)) return "ACT_WAVE";
+        var turns = new string[] { "转身", "转过去", "转个身", "环顾", "看四周", "左右看" };
+        foreach (var g in turns)
+            if (t.Contains(g)) return "ACT_LOOKAROUND";
+        var follows = new string[] { "跟", "跟着我", "过来", "跟上来" };
+        foreach (var g in follows)
+            if (t.Contains(g)) return "ACT_FOLLOW";
+        var sits = new string[] { "坐", "坐下", "休息一下", "歇会儿" };
+        foreach (var g in sits)
+            if (t.Contains(g)) return "ACT_SIT";
+        var stand = new string[] { "立正", "站好", "站直", "别动", "停", "停下" };
+        foreach (var g in stand)
+            if (t.Contains(g)) return "ACT_STAND";
+        return null; // 普通聊天：不本地预演，等 Python 发 ACT_NOD 等反应
+    }
+
     // ---- 发送 ----
     public void SendChat(string text)
     {
+        // 本地即时反馈：玩家一发消息，角色立刻给一个轻量反应（点头），
+        // 不依赖 Python 链路，即使后端卡顿也有“输入有反应”。
+        // Python 端会按语义下发更精确的动作（打招呼→挥手/转身→环顾等），
+        // TriggerAction 支持打断，不会冲突。
+        if (stateMachine != null)
+        {
+            var localAction = LocalDetectAction(text);
+            if (localAction != null)
+            {
+                // 问候类用较快速度(兴奋)，普通动作速度 1
+                float spd = (localAction == "ACT_WAVE") ? 1.0f : 1.0f;
+                stateMachine.TriggerAction(localAction, 1.5f, spd, 1.0f);
+            }
+            else
+                stateMachine.TriggerAction("ACT_NOD", 1.0f, 0.9f, 0.8f); // 普通聊天：慢而轻的点头
+        }
+        else
+            Debug.LogWarning($"[NpcBridge:{npcId}] SendChat 时 stateMachine 为 null");
         SendJson(new Dictionary<string, object> {
             { "type", "user_input" }, { "npc_id", npcId }, { "text", text } });
     }
@@ -251,10 +383,25 @@ public class NpcBridgeClient : MonoBehaviour
         }
         string s = MiniJSON.Json.Serialize(obj);
         var bytes = Encoding.UTF8.GetBytes(s);
-        Debug.Log($"[NpcBridge:{npcId}] → {s}");
-        try { _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text,
-                            true, _cts.Token); }
-        catch (Exception e) { Debug.LogWarning($"[NpcBridge:{npcId}] 发送失败：{e.Message}"); }
+        if (s.Length < 200) Debug.Log($"[NpcBridge:{npcId}] → {s}");
+        else Debug.Log($"[NpcBridge:{npcId}] → {s.Substring(0, 80)} ... ({s.Length} 字符)");
+        _ = SendJsonAsync(obj); // fire-and-forget，异常在内部捕获
+    }
+
+    async Task SendJsonAsync(Dictionary<string, object> obj)
+    {
+        if (!_connected || _ws == null) return;
+        try
+        {
+            string s = MiniJSON.Json.Serialize(obj);
+            var bytes = Encoding.UTF8.GetBytes(s);
+            await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text,
+                                true, _cts.Token);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[NpcBridge:{npcId}] 发送失败：{e.Message}");
+        }
     }
 
     // ---- 音频播放 ----

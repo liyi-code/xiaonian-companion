@@ -28,7 +28,7 @@ public class ExpressionController : MonoBehaviour
     void ResolveVrm()
     {
         // 1) 在已加载程序集里找 UniVRM 1.0 的 Vrm10Instance 类型
-        Type vrmType = FindType("uniVRM10.Vrm10Instance");
+        Type vrmType = FindType("UniVRM10.Vrm10Instance");
         if (vrmType == null)
         {
             Debug.LogWarning("[Expression] 未找到 Vrm10Instance 类型（UniVRM 1.0 未加载），表情将不可用。");
@@ -58,7 +58,7 @@ public class ExpressionController : MonoBehaviour
         if (_expressionRuntime == null) return;
 
         // 5) 找 ExpressionPreset 枚举和 SetWeight 方法
-        _expressionPresetType = FindType("uniVRM10.ExpressionPreset");
+        _expressionPresetType = FindType("UniVRM10.ExpressionPreset");
         if (_expressionPresetType == null) return;
 
         Type exprType = _expressionRuntime.GetType();

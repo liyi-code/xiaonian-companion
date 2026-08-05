@@ -7,6 +7,7 @@
 // 挂法：场景里放一个空 GameObject，挂本脚本；Inspector 填 wsUrl（默认 ws://127.0.0.1:8765）。
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -67,12 +68,22 @@ public class BridgeHub : MonoBehaviour
         {
             while (_ws != null && _ws.State == WebSocketState.Open && !_cts.IsCancellationRequested)
             {
-                var seg = new ArraySegment<byte>(buf);
-                var res = await _ws.ReceiveAsync(seg, _cts.Token);
-                if (res.MessageType == WebSocketMessageType.Close) break;
-                string json = Encoding.UTF8.GetString(buf, 0, res.Count);
-                // 切回主线程处理 UI/场景对象
-                UnityMainThreadDispatcher.Enqueue(() => Route(json));
+                using (var ms = new MemoryStream())
+                {
+                    WebSocketReceiveResult res;
+                    do
+                    {
+                        var seg = new ArraySegment<byte>(buf);
+                        res = await _ws.ReceiveAsync(seg, _cts.Token);
+                        if (res.MessageType == WebSocketMessageType.Close) break;
+                        ms.Write(buf, 0, res.Count);
+                    } while (!res.EndOfMessage);
+
+                    if (res.MessageType == WebSocketMessageType.Close) break;
+                    string json = Encoding.UTF8.GetString(ms.ToArray());
+                    // 切回主线程处理 UI/场景对象
+                    UnityMainThreadDispatcher.Enqueue(() => Route(json));
+                }
             }
         }
         catch (OperationCanceledException) { }

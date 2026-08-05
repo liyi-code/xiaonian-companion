@@ -106,14 +106,10 @@ public class ActionContextProvider : MonoBehaviour
         _actionPending = true;
         _actionTimer = 0f;
 
-        // 触发 Animator 里的同名 Trigger（前提是你已经在 Animator 里建了这些 Trigger）
-        if (animator != null)
-        {
-            string trigger = action.Trim('[', ']'); // [ACT_SIT] -> ACT_SIT
-            animator.SetTrigger(trigger);
-        }
-
-        Debug.Log($"[ActionContext] {bridge?.npcId} 执行动作: {action}");
+        // 注意：真正的 Animator 触发由 ConceptStateMachine.TriggerAction 统一完成
+        // （NpcBridgeClient 收到 action_intent 时已调用它），这里【不再重复 SetTrigger】，
+        // 否则同一动作会被触发两次（双 Trigger 隐患）。本脚本只负责：业务日志 + 反馈 + 事件。
+        Debug.Log($"[ActionContext] {bridge?.npcId} 收到动作意图: {action}（由 ConceptStateMachine 统一触发动画）");
         onActionIntent?.Invoke(action);
     }
 

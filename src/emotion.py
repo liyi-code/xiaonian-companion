@@ -47,6 +47,29 @@ TRAIT_PROMPT = {
     "黏人紧张": "你现在有点不安/黏人，会更想确认他在不在意你、更主动索求关注，但别过度。",
 }
 
+# 各性格的「肢体动作偏好」（动作受性格权重影响的核心数据）。
+# speed_mul / amplitude_mul：对情感(joy)算出的基础 speed/amplitude 再乘的倍率；
+# lean：身体前倾/后仰倾向（- 后缩/矜持，+ 前倾/亲近）；
+# micro：倾向的附加小动作（Unity 端的 ACT_* 名，用于普通聊天兜底时的类型微调）。
+# 底层目的「让玩家生活越来越好」不变，这里只改演出风格，不改原则。
+TRAIT_MOTION = {
+    "温柔平静":   {"speed_mul": 0.82, "amplitude_mul": 0.85, "lean": -0.05,
+                   "micro": [], "desc": "舒缓温和、动作轻而克制"},
+    "活泼开心":   {"speed_mul": 1.18, "amplitude_mul": 1.12, "lean": 0.10,
+                   "micro": ["ACT_WAVE"], "desc": "轻快活泼、动作幅度大、爱挥手"},
+    "傲娇小脾气": {"speed_mul": 1.08, "amplitude_mul": 0.95, "lean": -0.12,
+                   "micro": ["ACT_TURN"], "desc": "略快、带点小幅度甩动、偶尔别过脸"},
+    "敏感爱哭":   {"speed_mul": 0.75, "amplitude_mul": 0.78, "lean": -0.15,
+                   "micro": [], "desc": "慢、小幅、偏低头收敛"},
+    "黏人紧张":   {"speed_mul": 0.92, "amplitude_mul": 0.88, "lean": 0.18,
+                   "micro": ["ACT_FOLLOW"], "desc": "中等速度、略小幅、偏向靠近他"},
+}
+
+
+def motion_params_for(trait):
+    """返回某性格的肢体偏好 dict（缺省回退温柔平静）。"""
+    return dict(TRAIT_MOTION.get(trait, TRAIT_MOTION["温柔平静"]))
+
 # 中性基线（初始：平静略高，其余接近 0）
 DEFAULT_EMOTION = {"joy": 0.15, "anger": 0.0, "sadness": 0.0, "calm": 0.5, "anxiety": 0.0}
 DEFAULT_ACCUM = {"joy": 5.0, "anger": 0.0, "sadness": 0.0, "calm": 20.0, "anxiety": 0.0}
@@ -333,6 +356,23 @@ class EmotionEngine:
             return "calm"
         emo = dict(self.emotion)
         return max(EMOTION_DIMS, key=lambda k: emo[k])
+
+    def motion_params(self):
+        """返回当前「性格 + 情感」融合后的肢体动作参数，供动作下发使用。
+
+        返回 dict：
+          trait       当前性格名（温柔平静/活泼开心/…）
+          speed_mul   性格速度倍率
+          amplitude_mul 性格幅度倍率
+          lean        身体倾向（- 后缩/矜持，+ 前倾/亲近）
+          micro       性格倾向的附加小动作（ACT_* 列表）
+          desc        人类可读说明
+        性格永远不变底层目的，只改演出风格。
+        """
+        trait = self.personality.get("trait", "温柔平静")
+        mp = motion_params_for(trait)
+        mp["trait"] = trait
+        return mp
 
     def _blend(self):
         """返回 (主导维度, 次要维度或 None)。性格由累计差值分布决定。"""

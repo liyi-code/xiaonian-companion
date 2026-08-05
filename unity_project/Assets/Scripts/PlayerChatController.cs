@@ -80,7 +80,7 @@ public class PlayerChatController : MonoBehaviour
 
         ResolveTarget();
         string receiverName = null;
-        if (targetNpc != null)
+        if (targetNpc != null && targetNpc.IsConnected)
         {
             Debug.Log($"[PlayerChat] 发送给 {targetNpc.npcId}: {t}");
             targetNpc.SendChat(t);
@@ -94,8 +94,8 @@ public class PlayerChatController : MonoBehaviour
         }
         else
         {
-            _hint = "场景里找不到带 NpcBridgeClient / NpcAgent 的 NPC。";
-            Debug.LogWarning("[PlayerChat] 找不到目标 NPC/Agent");
+            _hint = "目标 NPC 未连接，也找不到 BridgeHub/Agent。";
+            Debug.LogWarning("[PlayerChat] 无法发送：无可用通道");
             return;
         }
 

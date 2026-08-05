@@ -5,6 +5,7 @@
 // 依赖：UniVRM（BlendShapeProxy 控制面部表情）。若用 VRM1，请把 SetBlendShape 内改成
 //       runtime.Expression.SetWeight(...)。
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -47,6 +48,12 @@ public class NpcAgent : MonoBehaviour
 
     void OnDestroy() { BridgeHub.Instance?.UnregisterAgent(npcId); }
 
+    public void SendChat(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        BridgeHub.Instance?.SendUserInput(npcId, text);
+    }
+
     // ---------------- 下行事件入口（BridgeHub 调用）----------------
     public void HandleEvent(JObject ev)
     {
@@ -55,7 +62,13 @@ public class NpcAgent : MonoBehaviour
         {
             case "token":        AppendBubble((string)ev["text"]); break;
             case "emotion":      SetEmotion((string)ev["dominant"]); break;
-            case "action":       PlayAction((string)ev["name"]); break;
+            case "action":
+                {
+                    string name = (string)ev["name"];
+                    float dur = ev.Value<float?>("duration") ?? 0f;
+                    PlayAction(name, dur);
+                    break;
+                }
             case "speech_start": StartSpeech(); break;
             case "audio":        PlayAudio((string)ev["wav"]); break;
             case "talk_stop":    StopSpeech(); break;
@@ -128,12 +141,50 @@ public class NpcAgent : MonoBehaviour
     }
 
     // ---------------- 动作 ----------------
-    private void PlayAction(string name)
+    private Coroutine _actionCoroutine;
+
+    private void PlayAction(string name, float duration = 0f)
     {
-        // 调用已有 AgentController 的动画触发；若没有则走 Animator
-        if (_ctrl != null) { _ctrl.HandleCommand(name, null, displayName); return; }
-        var anim = GetComponent<Animator>();
-        if (anim != null) anim.SetTrigger(name);
+        if (string.IsNullOrEmpty(name)) return;
+
+        var anim = GetComponentInChildren<Animator>();
+        if (anim != null)
+        {
+            // Python 端用简单名 wave，Animator 里 trigger/state 名可能是 ACT_WAVE
+            string triggerName = name;
+            if (!triggerName.StartsWith("ACT_", StringComparison.OrdinalIgnoreCase))
+                triggerName = "ACT_" + triggerName.ToUpperInvariant();
+            // 先触发 Animator 中同名 trigger（兼容旧状态机）
+            anim.SetTrigger(triggerName);
+            // 再强制播放同名状态，避免状态机里动作被立即切回 idle 只动 1 帧
+            anim.Play(triggerName, 0, 0f);
+
+            _currentAction = triggerName;
+            if (duration > 0f)
+            {
+                if (_actionCoroutine != null) StopCoroutine(_actionCoroutine);
+                _actionCoroutine = StartCoroutine(HoldAction(duration));
+            }
+        }
+
+        // 移动/交互类命令仍交给 AgentController；动画类命令上面已处理
+        if (_ctrl != null) _ctrl.HandleCommand(name, null, displayName);
+    }
+
+    private string _currentAction;
+
+    private IEnumerator HoldAction(float duration)
+    {
+        yield return new WaitForSeconds(duration);
+        var anim = GetComponentInChildren<Animator>();
+        if (anim != null)
+        {
+            // 时间到后平滑切回 Idle；若状态机没有 Idle，ResetTrigger 兜底
+            try { anim.CrossFade("Idle", 0.25f, 0); } catch { }
+            if (!string.IsNullOrEmpty(_currentAction))
+                anim.ResetTrigger(_currentAction);
+        }
+        _currentAction = null;
     }
 
     // ---------------- 语音（解码 wav 播放）----------------
@@ -182,9 +233,4 @@ public class NpcAgent : MonoBehaviour
         Debug.Log($"[{displayName}] 接到小镇任务，前往: {target} @ {pos}");
     }
 
-    // ---------------- 上行：玩家输入 ----------------
-    public void SendChat(string text)
-    {
-        BridgeHub.Instance?.SendUserInput(npcId, text);
-    }
 }
