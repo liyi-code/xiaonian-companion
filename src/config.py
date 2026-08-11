@@ -47,7 +47,7 @@ CONFIG = {
     "model": os.getenv("MODEL", "gpt-4o-mini"),
     # 可在设置面板(◐)里切换的模型列表：逗号分隔，写 .env 的 MODELS 即可自定义
     "models": [m.strip() for m in os.getenv("MODELS", "deepseek-chat,deepseek-reasoner").split(",") if m.strip()],
-    "name": os.getenv("GIRLFRIEND_NAME", "小念"),
+    "name": os.getenv("COMPANION_NAME", "小念"),
     "proactive_interval_min": int(os.getenv("PROACTIVE_INTERVAL_MIN", "15")),
     # —— 回复长度 / 历史（控速关键）——
     # 单条回复最大 token 数：直接限制 LLM 生成长度 + TTS 朗读长度，是“回复慢/文字太多”

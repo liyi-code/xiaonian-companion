@@ -229,8 +229,10 @@ class Consciousness:
                 # 直接以当前基础强度插入节点（setdefault 不会覆盖已有值）。
                 # 注意：AssocGraph 不存 activations（那是 spread_activation 的返回值），
                 # 只需初始化 strength + edges 并 touch 刷新近因时间戳。
-                self.graph.strength.setdefault(a, config.BASE_STRENGTH)
-                self.graph.edges.setdefault(a, {})
+                # C++ 后端(stl.h 拷贝语义)不支持对返回 dict 的就地 setdefault 写回，
+                # 故走显式方法 ensure_strength / ensure_edge_slot（Python 后端同名方法兼容）。
+                self.graph.ensure_strength(a, config.BASE_STRENGTH)
+                self.graph.ensure_edge_slot(a)
                 self.graph.touch(a)
 
     def spontaneous_action(
@@ -334,8 +336,8 @@ class Consciousness:
                 break
             # 同步清理记忆库里被合并的词（图与记忆库保持一致）
             for c, _ in merged:
-                self.mem.counts.pop(c, None)
-                self.mem.last_seen.pop(c, None)
+                self.mem.pop_count(c)
+                self.mem.pop_last_seen(c)
             steps += 1
         after_nodes = self.graph.node_count()
         after_ms = self.think_ms + self.graph.benchmark_ms()
@@ -388,12 +390,12 @@ class Consciousness:
             ts = time.strftime("%Y%m%d_%H%M%S")
             path = os.path.join(config.SLEEP_EXPORT_DIR, f"mind_filtered_{ts}.json")
         new_graph = AssocGraph.from_dict(self.graph.to_dict())
-        for c in list(new_graph.strength.keys()):
+        for c in list(new_graph.snapshot_strength().keys()):
             if c not in keep:
                 new_graph.drop(c)
-        new_counts = {c: v for c, v in self.mem.counts.items() if c in keep}
+        new_counts = {c: v for c, v in self.mem.get_counts().items() if c in keep}
         self.graph = new_graph
-        self.mem.counts = new_counts
+        self.mem.set_counts(new_counts)
         self.traverse_ms = self.think_ms + self.graph.benchmark_ms()
         self.user_screening_needed = False
         self.sleep_state = "awake"
@@ -403,7 +405,7 @@ class Consciousness:
 
     def list_concepts(self, n: int | None = None) -> List[Tuple[str, float]]:
         """列出概念(按强度降序)，供用户筛选 UI。返回 [(概念, 强度), ...]。"""
-        items = sorted(self.graph.strength.items(), key=lambda kv: kv[1], reverse=True)
+        items = sorted(self.graph.snapshot_strength().items(), key=lambda kv: kv[1], reverse=True)
         return items[:n] if n else items
 
     def screening_status(self) -> dict:

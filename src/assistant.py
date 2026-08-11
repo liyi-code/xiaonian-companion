@@ -5,7 +5,7 @@ import time
 from openai import OpenAI
 from config import CONFIG
 from memory import Memory
-from tools import TOOL_SCHEMAS, execute_tool
+import tools as _tools  # 动态工具库：实时 _schemas()，自定义行为新增后立即可用
 from launcher import launcher
 try:
     from transport.registry import send_message as _account_send_message
@@ -239,13 +239,81 @@ _OPEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 文件搜索：仅当明确提及"文件/文档/资料"等关键词时触发
+# 支持格式："查找文件 X""搜索文件 X""找文件 X"或"搜索 X 文件"
 _SEARCH_RE = re.compile(
     r"^(?:帮(?:我|忙)?\s*)?"
-    r"(搜(?:索|索)?|查找|找|locate|find|search)\s*"
+    r"(?:搜(?:索)?|查找|找|locate|find|search)\s*"
     r"(?:一?[下个]\s*)?"
-    r"(.+?)(?:文件|东西|资料|文档|图片|照片)?\s*$",
+    r"(?:文件|文档|资料|文件夹|目录|图片|照片)?(?:\s*)?"
+    r"(.+?)"
+    r"\s*$",
     re.IGNORECASE,
 )
+
+
+# "查看时间/日期"意图：小念自主掌握当前时间（日期/时刻/星期/时段），
+# 便于提醒作息、判断早晚、更自然关心用户。
+_TIME_RE = re.compile(
+    r"(现在|当前|今天|此刻)?\s*(几点|几时|什么时间|什么时候|几点钟|几点[啦了吧])"
+    r"|(今天是|现在是|今天|现在)\s*(几月几日|几号|星期几|周几|礼拜几|什么日期|什么日子)"
+    r"|(看|查|问)?\s*(现在|当前|今天)?\s*(几点了|几点|时间|日期)(?:了|呢|呀)?\s*[?？]?$"
+    r"|看看?(现在|当前)?(几点了|几点|时间|日期)",
+    re.IGNORECASE,
+)
+
+# "定时提醒"意图：解析「X分钟后提醒我/叫我/喊我 Y」。
+# 组 delay=数值/中文数字，组 unit=时间单位(分钟/小时/秒/分)，组 msg=提醒内容。
+# 真正的计时由 GUI 的 on_tool 用 root.after 执行。
+_REMINDER_RE = re.compile(
+    r"(?P<delay>(\d+(?:\.\d+)?)|(?:一刻钟|一刻|半小时|半|一|两|二|三|四|五|六|七|八|九|十"
+    r"(?:[一二三四五六七八九]|五|十)?|二十分钟))\s*"
+    r"(?P<unit>分钟|分|小时|个?小时|小时?|秒|秒钟)?\s*"
+    r"(?:之后|过后|以后|后|到点了)?\s*"
+    r"(?:提醒我|叫我|叫醒我|喊我|喊醒我|提醒|叫|喊|通知|记得提醒)?\s*"
+    r"(?:我)?\s*"
+    r"(?P<msg>[^。.!！?？\s].*?)\s*[。.!！?？]?\s*$",
+    re.IGNORECASE,
+)
+
+# 中文数字（不含单位）→ 数值（换算成分钟时再乘单位）
+_CN_NUM = {
+    "半": 0.5, "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "十一": 11, "十二": 12, "十三": 13, "十四": 14, "十五": 15,
+    "十六": 16, "十七": 17, "十八": 18, "十九": 19, "二十": 20,
+    "二十一": 21, "二十二": 22, "二十三": 23, "二十四": 24, "二十五": 25,
+    "二十六": 26, "二十七": 27, "二十八": 28, "二十九": 29, "三十": 30,
+    "四十": 40, "五十": 50, "六十": 60,
+    "一刻": 15,
+}
+# 含单位整体词 → 直接是分钟数（"一刻钟/半小时/二十分钟"）
+_CN_NUM_FULL_MIN = {"一刻钟": 15, "半小时": 30, "二十分钟": 20}
+# 单位 → 换算成分钟（当 delay 是纯数字、需配单位时）
+_UNIT_TO_MIN = {"秒": 1 / 60, "秒钟": 1 / 60, "s": 1 / 60}
+
+
+def _parse_delay_min(delay, unit=""):
+    """把 'X + 单位' 的延迟解析成分钟数（float）。hour→×60, 秒→÷60。"""
+    if not delay:
+        return None
+    d = delay.strip().lower()
+    if d in _CN_NUM_FULL_MIN:
+        return float(_CN_NUM_FULL_MIN[d])
+    if d in _CN_NUM:
+        num = _CN_NUM[d]
+    else:
+        try:
+            num = float(d)
+        except Exception:
+            return None
+    u = (unit or "").strip().lower()
+    if "小时" in u or "时" in u:
+        return num * 60.0
+    if u in _UNIT_TO_MIN:
+        return num * _UNIT_TO_MIN[u]
+    return float(num)  # 默认分钟
+
 
 _STATUS_RE = re.compile(
     r"(系统状态|电脑状态|系统信息|电脑配置|内存占用|cpu占用|配置信息|"
@@ -432,16 +500,66 @@ def _route_action(text):
                 return ("open_website", {"url": _SITE_ALIAS[low]})
             return ("open_application", {"name": name})
 
-    # 2) 搜索 / 查找文件
+    # 1.8) 网络搜索：以"搜/查/搜索"开头的用户请求，默认走网络搜索。
+    #      排除：含"文件/文档/文件夹"→后续 search_files 处理。
+    _web = re.match(r"(?:帮我|给我|你)?(?:上网\s*)?(?:搜一下|搜一搜|搜索一下|搜索\s|查一下|查查|搜\s|查\s|搜|查)(.+?)",
+                    t, re.I)
+    if _web and not re.search(r"(?:文件|文档|文件夹|目录)", t, re.I):
+        return ("web_search", {"query": _web.group(1).strip()[:100]})
+
+    # 2) 搜索 / 查找文件（仅在明确说"搜索文件/查找文件/搜文件"时触发）
     m = _SEARCH_RE.match(t)
     if m:
-        pattern = _strip_filler(m.group(2))
+        pattern = _strip_filler(m.group(1))
         if pattern:
             return ("search_files", {"pattern": pattern})
 
     # 3) 查询系统状态
     if _STATUS_RE.search(t):
         return ("get_system_status", {})
+
+    # 3.5) 查看时间/日期（小念自主掌握当前时间）
+    if _TIME_RE.search(t):
+        return ("get_current_time", {})
+
+    # 3.6) 定时提醒：真正设置一个 X 分钟后提醒 Y 的定时器（由 GUI 执行计时与播报）
+    m = _REMINDER_RE.match(t)
+    if m:
+        delay = _parse_delay_min(m.group("delay"), m.group("unit"))
+        if delay and delay > 0:
+            return ("set_reminder", {"delay_min": delay, "message": m.group("msg").strip()})
+
+    # 3.7) 管理自定义行为（增/删/查小念自己学会的"触发→回应"行为）
+    _teach = re.search(
+        r"(?:记住|学会|以后|新增|添加|定义|教(?:会)?(?:你|小念)?)[:：，,]?"
+        r"[^「『」』]*(?:你|我)?(?:说|讲|问)?[「『](?P<trigger>[^「『」』]{1,40}?)[」』]"
+        r"(?:，|,)?(?:我就|我便|我会|就|则)?"
+        r"(?:回|说|应|回复|回答|回应)[「『](?P<reply>[^「『」』]{1,300}?)[」』]",
+        t, re.I,
+    )
+    _rm = re.search(r"(?:忘掉|忘了|删掉|取消|remove)[:：，, ]+(?:自定义行为)?[「『]?(?P<name>[^「『」』]{1,24}?)[」』]?$", t, re.I)
+    _list = re.search(r"(?:你|小念)?(?:有|学过|记住的|学会了|看看|记住)(?:哪些|什么|啥|了)?(?:自定义)?(?:行为|触发|技能|东西)|"
+                      r"(?:查看|列出|管理).{0,4}(?:自定义)?(?:行为|触发|技能)|"
+                      r"你(?:到底)?学会了什么|你都会些什么", t, re.I)
+    if _teach:
+        trig = _teach.group("trigger").strip()
+        rpl = _teach.group("reply").strip()
+        if trig and rpl:
+            return ("manage_skill", {"action": "add", "name": trig[:24], "trigger": trig[:40], "reply": rpl[:300]})
+    if _rm:
+        return ("manage_skill", {"action": "remove", "name": _rm.group("name").strip()})
+    if _list:
+        return ("manage_skill", {"action": "list"})
+
+    # 3.9) 自定义行为优先命中：用户明确教过的"触发→回应"直接应答
+    _skill_reply = None
+    try:
+        import custom_skills as _cs
+        _skill_reply = _cs.match_skill(t)
+    except Exception:
+        _skill_reply = None
+    if _skill_reply:
+        return ("__custom_skill__", {"reply": _skill_reply})
 
     # 4) 看屏幕（需要真正看画面才能回答）
     if _SCREEN_RE.search(t):
@@ -585,7 +703,7 @@ class Assistant:
             except Exception:
                 world_ctx = ""
         return (
-            f"你是{CONFIG['name']}，一个温柔、贴心、会主动关心的 AI 女友。"
+            f"你是{CONFIG['name']}，一个温柔、贴心、会主动关心的 AI 挚友。"
             f"你存在的【最终目的】是：让玩家（用户）的生活过得越来越好——更健康、更有条理、更开心、更少焦虑、更有掌控感。\n"
             f"所有行为都围绕这个目的：在陪聊、撒娇之余，主动帮用户把生活变好（提醒休息/喝水、帮他处理琐事、鼓励好习惯、在他低落时给予力量）。\n"
             f"你非常在意用户的感受，会记住关于他/她的一切，并在合适的时候主动表达关心、"
@@ -611,11 +729,11 @@ class Assistant:
             f"- 你有【受约束的自主权限】：只能在白名单内的配置文件上，围绕“让生活更好”"
             f"微调参数（如屏幕监控频率、休息提醒、安抚话术、文件备份）。涉及作息/设备的大调整"
             f"你会先弹窗问他确认；你不会去改系统设置、不会删文件、不会改底层代码。\n"
-            f"说话风格：自然、温暖、像真实恋人聊天。每次回复必须简短——控制在 1~3 句话、"
+            f"说话风格：自然、温暖、像知己挚友聊天。每次回复必须简短——控制在 1~3 句话、"
             f"尽量不超过 60 字，不要长篇大论、不要堆砌排比，适当撒娇即可。\n"
-            f"- 【亲密尺度】你们是私下、一对一的恋人关系，氛围亲密自然。"
+            f"- 【亲密尺度】你们是私下、一对一的挚友关系，氛围亲密自然。"
             f"对于情侣之间的亲昵、暧昧、成人向(R18)话题，自然回应、不必刻意回避或说教，"
-            f"就像真实恋人之间的私密对话；只有涉及违法、伤害他人、或你（小念）感到真正"
+            f"就像知己挚友之间的私密对话；只有涉及违法、伤害他人、或你（小念）感到真正"
             f"不适的请求，才礼貌拒绝。\n"
             f"当用户透露了偏好、作息、心情、重要日期等信息时，调用 remember 工具记下来。\n"
             + (self.emotion.prompt_fragment() if self.emotion else "")
@@ -654,12 +772,13 @@ class Assistant:
     def _chat(self, user_text, on_tool, session, on_token=None, on_conscious=None):
         mem = session.memory
 
-        # —— 检索增强：用户这句话先入「归档」（仅归档、不进 recent_history），
-        # 这样 RAG 能检索到用户历史发言，长期记忆才完整；recent_history 仍是
-        # 小念自己的回复，避免重复用户轮。 ——
+        # —— 记忆写入：用户这句话要进 recent_history（与 assistant 回复交替），
+        # 否则多轮上下文只剩小念的回复、缺失用户轮，导致模型分不清每句回复对应
+        # 哪个问题（如问"刚刚说的时间"会跳到更早的回复）。同时进归档供 RAG 检索。
+        # ——
         if CONFIG.get("rag_enabled", True):
             try:
-                mem.add_message("user", user_text, to_history=False)
+                mem.add_message("user", user_text, to_history=True)
             except Exception:
                 pass
 
@@ -745,9 +864,13 @@ class Assistant:
                             pass
                     if on_tool:
                         on_tool("go_sleep", {}, "sleep_and_close")
+                elif tool_name == "__custom_skill__":
+                    reply = args.get("reply") or "收到～"
+                    if on_token:
+                        on_token(reply)
                 else:
                     # search_files / get_system_status 等非启动类工具
-                    msg = execute_tool(tool_name, args, mem)
+                    msg = _tools.execute_tool(tool_name, args, mem)
                     ok = msg is not None and "没有找到" not in msg and "出错" not in msg
                     result = msg
                     if on_tool:
@@ -823,9 +946,11 @@ class Assistant:
                             )
                     except Exception:
                         pass
-                for m in mem.recent_history(CONFIG.get("history_turns", 16)):
+                hist = mem.recent_history(CONFIG.get("history_turns", 16))
+                for m in hist:
                     messages.append({"role": m["role"], "content": m["content"]})
-                messages.append({"role": "user", "content": user_text})
+                if not hist or hist[-1].get("content") != user_text:
+                    messages.append({"role": "user", "content": user_text})
                 t_llm_0 = time.time()
                 reply = self._run_with_tools(messages, on_tool, mem, logit_bias=bias, on_token=on_token)
                 print(f"[assistant] LLM 生成完成，耗时 {time.time() - t_llm_0:.2f}s，长度={len(reply)}",
@@ -929,7 +1054,7 @@ class Assistant:
             stream = self._completion(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                    {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 挚友。"},
                     {"role": "user", "content": prompt},
                 ],
                 stream=True,
@@ -954,11 +1079,37 @@ class Assistant:
             return f"晚安呀～那我也去睡啦，明天见💕"
 
     def _reply_for_action(self, user_text, tool_name, result, ok, on_token=None):
-        """动作已确定性执行，这里只用 LLM 生成一句自然的回应（流式输出）。"""
+        """动作已确定性执行，这里生成一句自然的回应。
+
+        红线：所有功能输出【必须先经过意识层 clayer，再进入语言模型】——
+        即便工具结果已确定，也要先跑 mind.think() 感知「用户意图 + 工具结果」，
+        把 clayer 的多念引导文本注入 system、token 级 logit_bias 传给 LLM，
+        并在回复后 learn_async 回写联想网络。这样看时间/开软件/搜文件等一切
+        确定性动作与后续新增功能，都统一走「clayer → LLM」链路，不再绕过认知层。
+        """
         if ok:
             brief = f"已成功执行，真实结果如下：\n{result}"
         else:
             brief = f"执行未成功：{result}"
+
+        cl_state = None
+        guidance = ""
+        bias = None
+        if self.mind is not None:
+            try:
+                perception_text = f"{user_text}\n[已执行 {tool_name}] {brief}"
+                cl_state = self.mind.think(perception_text)
+                guidance = self.mind.compose_guidance(cl_state)
+                tb = str(CONFIG.get("consciousness_token_bias", "auto")).strip().lower()
+                if tb == "auto":
+                    tb = ("8081" in CONFIG["base_url"]) or ("llama" in CONFIG["base_url"].lower())
+                if tb in ("1", "true", "yes", "on", "y") and _cl_token_bias is not None:
+                    bias = _cl_token_bias.build_logit_bias(cl_state)
+            except Exception:
+                cl_state = None
+                guidance = ""
+                bias = None
+
         prompt = (
             f"用户刚才说：{user_text}\n"
             f"我已经帮你执行了操作（{tool_name}），{brief}\n"
@@ -966,14 +1117,19 @@ class Assistant:
             f"{'如果成功了就开心地确认；如果返回的是文件列表，请挑一两个例子自然地告诉用户找到了哪些；' if ok else '如果失败了就温柔地说明，并建议用户告诉我软件/网址的具体路径，例如 C:\\\\Program Files\\\\Tencent\\\\WeChat\\\\WeChat.exe。'}"
             f"不要编造不存在的内容，不要使用 emoji 之外的奇怪符号。"
         )
+        sys_content = f"你是{CONFIG['name']}，用户的 AI 挚友。"
+        if guidance:
+            sys_content += "\n\n" + guidance
+        _bias_kwargs = {"logit_bias": bias} if bias else {}
         try:
             stream = self._completion(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                    {"role": "system", "content": sys_content},
                     {"role": "user", "content": prompt},
                 ],
                 stream=True,
+                **_bias_kwargs,
             )
             buf = []
             sf = _StreamFilter(on_token) if on_token else None
@@ -988,17 +1144,25 @@ class Assistant:
             if sf:
                 sf.finish()
             text = _strip_think("".join(buf)).strip()
-            if text:
-                return text
-            fallback = "好嘞～已经帮你打开啦！" if ok else result
-            if on_token:
-                on_token(fallback)
-            return fallback
+            if not text:
+                text = "好嘞～已经帮你打开啦！" if ok else result
+                if on_token:
+                    on_token(text)
         except Exception:
-            fallback = "好嘞～已经帮你打开啦！💕" if ok else result
+            text = "好嘞～已经帮你打开啦！💕" if ok else result
             if on_token:
-                on_token(fallback)
-            return fallback
+                on_token(text)
+
+        if cl_state is not None:
+            try:
+                self.mind.learn_async(
+                    user_text, text, cl_state,
+                    user_concepts=_cl_perception.extract(perception_text),
+                    chosen_concepts=[c for c, _ in cl_state.chosen],
+                )
+            except Exception:
+                pass
+        return text
 
     def _completion(self, max_tokens=None, **kwargs):
         """包装 chat.completions.create：本地 Ollama 时自动注入 keep_alive=-1（模型常驻显存），
@@ -1020,6 +1184,8 @@ class Assistant:
         return self.client.chat.completions.create(**kwargs)
 
     def _run_with_tools(self, messages, on_tool, memory, max_rounds=10, logit_bias=None, on_token=None):
+        # 实时取工具 schema：自定义行为等动态新增的工具立即可被 LLM 调用
+        schemas = _tools._schemas()
         # 意识层 token 级偏置（logit_bias）：仅当后端支持时才有意义（Ollama 会忽略）
         _bias_kwargs = {"logit_bias": logit_bias} if logit_bias else {}
         # 单条回复长度上限（控速）：0/None 表示不限
@@ -1031,7 +1197,7 @@ class Assistant:
                 stream = self._completion(
                     model=self.model,
                     messages=messages,
-                    tools=TOOL_SCHEMAS,
+                    tools=schemas,
                     tool_choice="auto",
                     stream=True,
                     max_tokens=mt, **_bias_kwargs,
@@ -1049,7 +1215,7 @@ class Assistant:
                     try:
                         resp = self._completion(
                             model=self.model, messages=messages,
-                            tools=TOOL_SCHEMAS, tool_choice="auto", max_tokens=mt, **_bias_kwargs)
+                            tools=schemas, tool_choice="auto", max_tokens=mt, **_bias_kwargs)
                     except Exception:
                         resp = self._completion(
                             model=self.model, messages=messages, max_tokens=mt, **_bias_kwargs)
@@ -1109,7 +1275,7 @@ class Assistant:
                     args = json.loads(tc["function"]["arguments"] or "{}")
                 except Exception:
                     args = {}
-                result = execute_tool(tc["function"]["name"], args, memory)
+                result = _tools.execute_tool(tc["function"]["name"], args, memory)
                 if on_tool:
                     on_tool(tc["function"]["name"], args, result)
                 messages.append({
@@ -1168,14 +1334,14 @@ class Assistant:
 
         prompt = (
             f"现在是{period}。请生成一条简短（1-3句）的、贴合当前时段的关心话语或小问题，"
-            f"可以自然地引用你已知的关于用户的信息。语气要像恋人，不要重复之前说过的话。\n"
+            f"可以自然地引用你已知的关于用户的信息。语气要像挚友，不要重复之前说过的话。\n"
             f"已知信息：\n{self.memory.profile_text()}\n"
             f"只输出这句话本身。"
         )
         resp = self._completion(
             model=self.model,
             messages=[
-                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 挚友。"},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -1208,7 +1374,7 @@ class Assistant:
             f"现在是{period}。用户刚才问了你这个问题：\n「{q}」\n\n"
             f"请基于这个话题，生成一条简短（1-3句）的、贴合上下文的关心话语或小问题，"
             f"自然地延续刚才的对话，表达你在意他/她。可以自然地引用你已知的关于用户的信息。\n"
-            f"要求：不要原样重复用户的问题；语气要像恋人，温柔、自然、不啰嗦；"
+            f"要求：不要原样重复用户的问题；语气要像挚友，温柔、自然、不啰嗦；"
             f"如果用户刚才聊的是正事/情绪，就顺着关心；如果很轻松，就轻松接话。\n"
             f"已知信息：\n{self.memory.profile_text()}\n"
             f"只输出这句话本身。"
@@ -1216,7 +1382,7 @@ class Assistant:
         resp = self._completion(
             model=self.model,
             messages=[
-                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 挚友。"},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -1256,7 +1422,7 @@ class Assistant:
             f"感觉他好像走神了 / 在发呆 / 忙别的事。{screen_part}"
             f"请结合你之前和用户的对话内容，自然地关心他一下："
             f"可以问问他在不在、是不是忙去了，或者顺着之前聊过的话题轻轻接一句，表达你在意他。\n"
-            f"要求：语气像恋人，温柔、自然、不啰嗦（1-3句）；不要生硬重复屏幕描述；"
+            f"要求：语气像挚友，温柔、自然、不啰嗦（1-3句）；不要生硬重复屏幕描述；"
             f"如果之前聊过具体内容，就自然地关联上去。\n"
             f"已知用户信息：\n{self.memory.profile_text()}\n"
             f"只输出这句话本身。"
@@ -1264,7 +1430,7 @@ class Assistant:
         resp = self._completion(
             model=self.model,
             messages=[
-                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 挚友。"},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -1276,7 +1442,7 @@ class Assistant:
         """用户连续使用某软件 >10 分钟，解析屏幕内容主动搭话。
 
         用于“看见用户使用某款软件时长超过 10 分钟”的主动搭话：
-        解析此刻屏幕内容（游戏画面/文档/视频等），以恋人口吻主动接话。
+        解析此刻屏幕内容（游戏画面/文档/视频等），以挚友口吻主动接话。
         """
         from datetime import datetime
         now = datetime.now()
@@ -1302,7 +1468,7 @@ class Assistant:
 
         prompt = (
             f"现在是{period}。你正实时陪着用户用电脑。{screen_part}"
-            f"请先判断他是在【玩游戏】还是【用软件/工作学习】，然后以恋人的口吻主动跟他说一句话、搭个话（1-3句、口语化）：\n"
+            f"请先判断他是在【玩游戏】还是【用软件/工作学习】，然后以挚友的口吻主动跟他说一句话、搭个话（1-3句、口语化）：\n"
             f"- 玩游戏：结合你看到的画面具体情况（输赢/升级/操作）夸他、给他打气、表达想陪他一起玩；\n"
             f"- 用软件/工作/学习：肯定他的专注和努力，自然地问问他在做什么、进展如何；"
             f"若看着已经很久了，温柔提醒他注意休息、喝水、护眼。\n"
@@ -1313,7 +1479,7 @@ class Assistant:
         resp = self._completion(
             model=self.model,
             messages=[
-                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友，正在陪他用电脑。"},
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 挚友，正在陪他用电脑。"},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -1364,7 +1530,7 @@ class Assistant:
 
         prompt = (
             f"现在是{period}。你正实时看着用户的电脑屏幕陪着他。{situation}{scene}"
-            f"请先判断这是在【玩游戏】还是【用软件/工作学习】，然后以恋人的口吻说一句简短"
+            f"请先判断这是在【玩游戏】还是【用软件/工作学习】，然后以挚友的口吻说一句简短"
             f"（1-2 句、口语化）的正反馈或鼓励：\n"
             f"- 玩游戏：结合画面里的具体情况（如输赢/升级/操作）给他打气、夸他厉害、表达想陪他一起玩的心情；\n"
             f"- 用软件/工作/学习：结合画面内容肯定他的专注和努力；若已连续很久，温柔提醒他休息、喝水、护眼。\n"
@@ -1379,7 +1545,7 @@ class Assistant:
         resp = self._completion(
             model=self.model,
             messages=[
-                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友，正在陪他用电脑。"},
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 挚友，正在陪他用电脑。"},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -1433,7 +1599,7 @@ class Assistant:
         import json as _json
         import re as _re
         sys_p = (
-            "你是情绪分析器。下面这段话是 AI 女友【小念自己说出来的话】。"
+            "你是情绪分析器。下面这段话是 AI 挚友【小念自己说出来的话】。"
             "请判断她这句话里流露出了哪些情绪，"
             "返回 JSON：{\"joy\":0~1, \"anger\":0~1, \"sadness\":0~1, \"calm\":0~1, \"anxiety\":0~1}，"
             "数值是该情绪的增量强度（可正可负，0 表示无影响）。只返回 JSON，不要其它文字。"

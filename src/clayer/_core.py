@@ -12,6 +12,8 @@
 后端判定在 import 时完成一次；可用 CPP_SOURCE 查看当前后端。
 """
 from __future__ import annotations
+import os
+import sys
 from typing import Any
 
 CPP_AVAILABLE = False
@@ -19,12 +21,35 @@ CPP_REASON = ""
 CPP_SOURCE = "python(fallback)"
 
 try:
+    # pyclayer.pyd 与 _core.py 同目录（src/clayer/）。若运行时该目录不在 sys.path，
+    # 顶层 import pyclayer 会失败；这里确保它能找到（幂等）。
+    _clayer_dir = os.path.dirname(os.path.abspath(__file__))
+    if _clayer_dir not in sys.path:
+        sys.path.insert(0, _clayer_dir)
     import pyclayer  # 编译产物：pyclayer.pyd (Win) / pyclayer*.so (Linux/mac)
-    if hasattr(pyclayer, "AssocGraph") and hasattr(pyclayer, "MemoryStore"):
-        CPP_AVAILABLE = True
-        CPP_SOURCE = f"pyclayer(C++ v{getattr(pyclayer, 'cpp_version', '?')})"
-    else:
+    if not (hasattr(pyclayer, "AssocGraph") and hasattr(pyclayer, "MemoryStore")):
         CPP_REASON = "pyclayer 缺少必要类"
+    else:
+        # C++ 扩展必须暴露上层 consciousness.py 直接调用的方法接口，
+        # 否则 stl.h 拷贝语义下这些字段访问不会写回 C++ 对象，导致意识层失效。
+        _g_proto = pyclayer.AssocGraph()
+        _m_proto = pyclayer.MemoryStore()
+        _need_methods = {
+            "AssocGraph": ("ensure_strength", "ensure_edge_slot", "snapshot_strength"),
+            "MemoryStore": ("get_counts", "set_counts", "get_last_seen",
+                            "set_last_seen", "pop_count", "pop_last_seen"),
+        }
+        _missing = []
+        for _cls_name, _methods in _need_methods.items():
+            _obj = _g_proto if _cls_name == "AssocGraph" else _m_proto
+            for _m in _methods:
+                if not hasattr(_obj, _m):
+                    _missing.append(f"{_cls_name}.{_m}")
+        if _missing:
+            CPP_REASON = "pyclayer C++ API 不完整，缺少: " + ", ".join(_missing)
+        else:
+            CPP_AVAILABLE = True
+            CPP_SOURCE = f"pyclayer(C++ v{getattr(pyclayer, 'cpp_version', '?')})"
 except Exception as e:  # 没编译 / 缺编译器 / ABI 不匹配 等
     CPP_REASON = str(e)
 
@@ -32,6 +57,10 @@ if CPP_AVAILABLE:
     AssocGraph = pyclayer.AssocGraph           # type: ignore
     MemoryStore = pyclayer.MemoryStore         # type: ignore
 else:
+    # clayer 子模块使用裸导入（如 import cl_config），需要把本目录加入 sys.path
+    _clayer_dir = os.path.dirname(os.path.abspath(__file__))
+    if _clayer_dir not in sys.path:
+        sys.path.insert(0, _clayer_dir)
     from assoc_graph import AssocGraph          # 纯 Python 实现（永久保留）
     from memory_store import MemoryStore        # 纯 Python 实现（永久保留）
 
@@ -65,6 +94,9 @@ def self_test(verbose: bool = True) -> bool:
     except Exception as e:
         CPP_AVAILABLE = False
         CPP_SOURCE = "python(fallback:parity-exception)"
+        _clayer_dir = os.path.dirname(os.path.abspath(__file__))
+        if _clayer_dir not in sys.path:
+            sys.path.insert(0, _clayer_dir)
         from assoc_graph import AssocGraph as _PyG
         from memory_store import MemoryStore as _PyM
         AssocGraph = _PyG
@@ -76,6 +108,9 @@ def self_test(verbose: bool = True) -> bool:
     if not ok:
         CPP_AVAILABLE = False
         CPP_SOURCE = "python(fallback:parity-mismatch)"
+        _clayer_dir = os.path.dirname(os.path.abspath(__file__))
+        if _clayer_dir not in sys.path:
+            sys.path.insert(0, _clayer_dir)
         from assoc_graph import AssocGraph as _PyG
         from memory_store import MemoryStore as _PyM
         AssocGraph = _PyG

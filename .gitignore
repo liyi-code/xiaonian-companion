@@ -51,11 +51,31 @@ out.txt
 pw_install*.txt
 memory_export.md
 MEMORY.md
-SESSION_NOTES.md
 test_*.py
 repro*.wav
 repro*.log
 _*.py
+
+# 项目总览快照（入库，作为项目说明；显式取消忽略）
+!SESSION_NOTES.md
+
+# Unity 大体积模型 / 临时调试脚本（不入库）
+*.vrm
+vendor_unity_skills/
+_grep2.txt
+build_log.txt
+color_params.txt
+methods.txt
+more_params.txt
+skills_list.txt
+skills_schema.txt
+gocreate.txt
+md_to_doc.py
+run_town.py
+watch_town.py
+xiaoyue.py
+disable_npcs.ps1
+inspect_npc.ps1
 
 # 本机专用大体积工具/模型（不入公开仓库）
 llamacpp-cuda/

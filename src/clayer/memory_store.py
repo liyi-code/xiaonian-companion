@@ -95,6 +95,29 @@ class MemoryStore:
     def top(self, n: int = 20) -> List[Tuple[str, float]]:
         return sorted(self.counts.items(), key=lambda kv: kv[1], reverse=True)[:n]
 
+    # ---------- 与 C++ 后端保持接口一致（consciousness.py 统一调用） ----------
+    def get_counts(self) -> Dict[str, float]:
+        """返回 counts 浅拷贝（替代直接 counts.items() 读取）。"""
+        return dict(self.counts)
+
+    def set_counts(self, d: Dict[str, float]) -> None:
+        """整体替换 counts（替代 counts = new_dict 赋值）。"""
+        self.counts = dict(d)
+
+    def get_last_seen(self) -> Dict[str, int]:
+        return dict(self.last_seen)
+
+    def set_last_seen(self, d: Dict[str, int]) -> None:
+        self.last_seen = dict(d)
+
+    def pop_count(self, c: str) -> None:
+        """等价 counts.pop(c, None)。"""
+        self.counts.pop(c, None)
+
+    def pop_last_seen(self, c: str) -> None:
+        """等价 last_seen.pop(c, None)。"""
+        self.last_seen.pop(c, None)
+
     # ---------- 遗忘 / 容量 ----------
     def _enforce_capacity(self) -> List[str]:
         """超容量时，淘汰计数最低(且低于遗忘阈值优先)的概念。返回被淘汰列表。"""

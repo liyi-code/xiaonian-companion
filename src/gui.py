@@ -20,7 +20,7 @@ from voice import VoiceInput, TTS
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(f"{CONFIG['name']} · 你的 AI 女友")
+        root.title(f"{CONFIG['name']} · 你的 AI 挚友")
 
         # 只保留输入框：无边框、可拖动、半透明悬浮条。其余反馈交给模型气泡/语音。
         root.geometry("470x54")
@@ -218,7 +218,7 @@ class App:
             self._start_live2d()
             # 启动后让小念用气泡主动打个招呼（等形象窗口 TCP 就绪）
             root.after(2600, lambda: self.live2d_say(
-                f"在呢～我是{CONFIG['name']}，你的专属 AI 女友。想聊什么、"
+                f"在呢～我是{CONFIG['name']}，你的专属 AI 挚友。想聊什么、"
                 f"要我帮你开软件查东西，都可以跟我说哦 💕"))
 
         # 语音输出：若已开启，则拉起（或重建）GPT-SoVITS 推理服务。
@@ -1219,6 +1219,59 @@ class App:
                 self._pending_sleep = True
                 self.root.after(0, lambda: self.append("💤 小念", "收到～我去睡啦，明天见💕"))
                 return
+            if name == "set_reminder":
+                # 真正启动一个定时器：delay_min 分钟后到点，主动弹出提醒并语音播报。
+                # 解决"小念只是口头答应、实际没设定时器"的问题——计时由 tkinter 主线程
+                # root.after 真实执行，到点经 _show_reply(proactive=True) 显示+播报。
+                # 同时登记到 self._reminders，供小念自主查询/取消。
+                try:
+                    delay_min = float(args.get("delay_min", 0))
+                except Exception:
+                    delay_min = 0.0
+                msg = (args.get("message") or "该注意休息啦").strip()
+                delay_ms = max(1, int(round(delay_min * 60 * 1000)))
+                text = f"叮铃铃～时间到啦：{msg} 💧"
+                self._reminder_seq += 1
+                rid = self._reminder_seq
+                fire_ts = time.time() + delay_ms / 1000.0
+                def _fire(rid=rid, text=text):
+                    # 到点触发：从登记里移除 + 弹出提醒
+                    self._reminders[:] = [r for r in self._reminders if r["id"] != rid]
+                    self._show_reply(CONFIG["name"], text, proactive=True)
+                aid = self.root.after(delay_ms, _fire)
+                self._reminders.append({
+                    "id": rid, "msg": msg, "text": text,
+                    "after_id": aid, "fire_ts": fire_ts,
+                })
+                return
+            if name == "reminder_status":
+                # 小念自主查询当前待触发的定时提醒
+                if not self._reminders:
+                    self.root.after(0, lambda: self.append("🛠 reminder_status",
+                        "我目前没有待触发的定时提醒哦。"))
+                    return
+                lines = ["【待触发的定时提醒】"]
+                for r in self._reminders:
+                    secs = max(0, int(r["fire_ts"] - time.time()))
+                    mm, ss = divmod(secs, 60)
+                    lines.append(f"- #{r['id']} 「{r['msg']}」还有 {mm}分{ss}秒")
+                self.root.after(0, lambda s="\n".join(lines): self.append("🛠 reminder_status", s))
+                return
+            if name == "cancel_reminder":
+                # 小念自主取消一个定时提醒
+                rid = int(args.get("id", 0) or 0)
+                if rid <= 0:
+                    self.root.after(0, lambda: self.append("🛠 cancel_reminder", "要取消哪个提醒呀？告诉我编号。"))
+                    return
+                removed = [r for r in self._reminders if r["id"] == rid]
+                if not removed:
+                    self.root.after(0, lambda: self.append("🛠 cancel_reminder", f"没有编号 #{rid} 的提醒～"))
+                    return
+                for r in removed:
+                    self.root.after_cancel(r["after_id"])
+                self._reminders[:] = [r for r in self._reminders if r["id"] != rid]
+                self.root.after(0, lambda: self.append("🛠 cancel_reminder", f"已经取消提醒 #{rid} 啦～"))
+                return
             self.root.after(0, lambda: self.append(f"🛠 {name}", str(result)[:500]))
 
         # 流式输出：先开气泡头，on_token 实时把文本增量追加到同一气泡；
@@ -1571,6 +1624,8 @@ class App:
         self._last_user_activity = time.time()   # 最近一次“用户动作”（输入/切窗）时间
         self._app_chat_exe = None                # 已就“连续使用”搭过话的软件（防同软件重复）
         self._last_idle_care = 0.0               # 上次空闲关心时间（限频，避免刷屏）
+        self._reminders = []                     # 定时提醒登记：[{id, msg, due_text, after_id, fire_ts}]
+        self._reminder_seq = 0                   # 提醒自增 id
 
     def _enqueue_user(self, text):
         """把一条用户发言放入回复队列，并启动处理 worker（若未运行）。"""

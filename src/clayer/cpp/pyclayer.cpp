@@ -162,6 +162,30 @@ struct MemoryStore {
         obj.clock_ = d.contains("clock") ? py::cast<long>(d["clock"]) : 0;
         return obj;
     }
+
+    // ---------- 供 Python 上层直接访问兼容（意识层 consciousness.py 用） ----------
+    // stl.h 默认把 unordered_map 作为拷贝转换，就地 setdefault/pop 不会写回 C++ 对象，
+    // 故显式提供这些方法，让上层无感访问内部字段。
+    py::dict get_counts() const {
+        py::dict d;
+        for (auto& kv : counts) d[py::cast(kv.first)] = kv.second;
+        return d;
+    }
+    void set_counts(py::dict d) {
+        counts.clear();
+        for (auto& kv : d) counts[py::cast<std::string>(kv.first)] = py::cast<double>(kv.second);
+    }
+    py::dict get_last_seen() const {
+        py::dict d;
+        for (auto& kv : last_seen) d[py::cast(kv.first)] = kv.second;
+        return d;
+    }
+    void set_last_seen(py::dict d) {
+        last_seen.clear();
+        for (auto& kv : d) last_seen[py::cast<std::string>(kv.first)] = py::cast<long>(kv.second);
+    }
+    void pop_count(const std::string& c) { counts.erase(c); }
+    void pop_last_seen(const std::string& c) { last_seen.erase(c); }
 };
 
 // ============================== AssocGraph ==============================
@@ -624,6 +648,19 @@ struct AssocGraph {
         if (obj.strength.empty() && !obj.edges.empty()) obj.ensure_strengths();
         return obj;
     }
+
+    // ---------- 供 Python 上层直接访问兼容（意识层 consciousness.py 用） ----------
+    py::dict snapshot_strength() const {
+        py::dict d;
+        for (auto& kv : strength) d[py::cast(kv.first)] = kv.second;
+        return d;
+    }
+    void ensure_strength(const std::string& name, double default_val) {
+        if (strength.find(name) == strength.end()) strength[name] = default_val;
+    }
+    void ensure_edge_slot(const std::string& a) {
+        edges[a];  // 确保内层空 map 存在（等价 Python 的 edges.setdefault(a, {})）
+    }
 };
 
 // ============================== pybind11 绑定 ==============================
@@ -647,7 +684,13 @@ PYBIND11_MODULE(pyclayer, m) {
         .def("commit_deltas", &MemoryStore::commit_deltas)
         .def("top", &MemoryStore::top, py::arg("n") = 20)
         .def("to_dict", &MemoryStore::to_dict)
-        .def_static("from_dict", &MemoryStore::from_dict);
+        .def_static("from_dict", &MemoryStore::from_dict)
+        .def("get_counts", &MemoryStore::get_counts)
+        .def("set_counts", &MemoryStore::set_counts)
+        .def("get_last_seen", &MemoryStore::get_last_seen)
+        .def("set_last_seen", &MemoryStore::set_last_seen)
+        .def("pop_count", &MemoryStore::pop_count)
+        .def("pop_last_seen", &MemoryStore::pop_last_seen);
 
     py::class_<AssocGraph>(m, "AssocGraph")
         .def(py::init<>())
@@ -685,7 +728,10 @@ PYBIND11_MODULE(pyclayer, m) {
              py::arg("mem"), py::arg("hops") = SPREAD_HOPS, py::arg("decay") = SPREAD_DECAY,
              py::arg("threshold") = SPREAD_THRESHOLD, py::arg("max_unlock") = SPREAD_MAX_UNLOCK)
         .def("to_dict", &AssocGraph::to_dict)
-        .def_static("from_dict", &AssocGraph::from_dict);
+        .def_static("from_dict", &AssocGraph::from_dict)
+        .def("snapshot_strength", &AssocGraph::snapshot_strength)
+        .def("ensure_strength", &AssocGraph::ensure_strength, py::arg("name"), py::arg("default_val"))
+        .def("ensure_edge_slot", &AssocGraph::ensure_edge_slot);
 
     m.def("set_parallel", [](bool p) { g_parallel = p; });
     m.def("get_parallel", []() { return static_cast<bool>(g_parallel); });

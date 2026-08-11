@@ -361,6 +361,19 @@ class AssocGraph:
             if c not in self.strength:
                 self._compute_strength(c)
 
+    # ---------- 与 C++ 后端保持接口一致（consciousness.py 统一调用） ----------
+    def ensure_strength(self, name: str, default_val: float) -> None:
+        """等价 Python 端的 strength.setdefault(name, default_val)（不覆盖已有值）。"""
+        self.strength.setdefault(name, default_val)
+
+    def ensure_edge_slot(self, a: str) -> None:
+        """等价 Python 端的 edges.setdefault(a, {})（确保内层空 map 存在）。"""
+        self.edges.setdefault(a, {})
+
+    def snapshot_strength(self) -> Dict[str, float]:
+        """返回 strength 的浅拷贝 dict（供 list_concepts/export_filtered 遍历，避免直接暴露内部字段）。"""
+        return dict(self.strength)
+
     def strength_of(self, c: str) -> float:
         return self.strength.get(c, 0.0)
 
