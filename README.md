@@ -1,6 +1,6 @@
-# 小念 · 本地版（AI 女友桌面程序）
+# 小念 · 本地版（AI 挚友桌面程序）
 
-一个**完全可本地离线运行**的 AI 女友桌面程序（Windows）。基于本地大模型 [Ollama](https://ollama.com)，
+一个**完全可本地离线运行**的 AI 挚友桌面程序（Windows）。基于本地大模型 [Ollama](https://ollama.com)，
 支持 Live2D 形象、语音、屏幕陪伴、长期记忆与自主行为。你的聊天记录、记忆、模型全部留在自己电脑上，
 不上传任何云端（除非你主动配置云端模型）。
 
@@ -26,7 +26,7 @@
 
 ## ✨ 功能特性
 
-- 💬 自然聊天，温柔体贴的女友人设
+- 💬 自然聊天，温柔体贴的挚友人设
 - 🧠 **意识层（clayer）**：外挂认知框架，模拟联想 / 注意力 / 遗忘 / 价值导向，让 qwen 越聊越有“自己在想事情”的连续意识流（详见[下文](#-意识层clayer架构)）
 - 💾 **检索增强记忆（RAG）+ 长对话压缩**：聊再久也不丢上下文、不前后矛盾
 - 🛠 **主动关心 + 受约束自主权限**：只在白名单内自调参（如更频繁提醒休息），绝不碰系统 / 代码 / 你的文件
@@ -64,8 +64,8 @@
 
 3. **获取本仓库**：
    ```bash
-   git clone https://github.com/liyi-code/ai-girlfriend-local.git
-   cd ai-girlfriend-local
+   git clone https://github.com/liyi-code/xiaonian-companion.git
+   cd xiaonian-companion
    ```
 
 4. **双击 `启动.bat`**：
@@ -165,7 +165,7 @@
 ## 📁 目录结构
 
 ```
-ai-girlfriend-local/
+xiaonian-companion/
 ├─ src/                # 程序源码（assistant / bridge / emotion / memory / clayer 意识层 / tools …）
 │  ├─ clayer/         # 意识层（联想/注意力/遗忘/价值导向，不改模型权重）
 │  ├─ villagers.py    # NPC 引擎：预加载、立绘/语音预热
