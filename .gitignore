@@ -25,13 +25,9 @@ ref_yae_clean.wav
 # 个人数据备份目录（clean_user_version.py 产物，含聊天记录/密钥备份）
 personal_backup_*/
 
-# 意识层 C++ 加速库（编译产物，不入库；换机器时运行 build_pyclayer 重新生成）
-src/clayer/pyclayer.pyd
-src/clayer/pyclayer*.so
-src/clayer/pyclayer*.pyd
-src/clayer/**/pyclayer*.so
-src/clayer/**/pyclayer*.pyd
-src/clayer/cpp/cpp_config.h
+# 意识层 C++ 加速库（预编译 .pyd 入库，非编译环境可直接用；.so 留 ignore 因 Linux 需本地编译）
+src/clayer/*.so
+src/clayer/**/*.so
 # 意识层运行时状态（mind.json 等，属个人长期记忆，不入库）
 src/clayer/brain_state/
 
