@@ -60,22 +60,102 @@ public class NpcAgent : MonoBehaviour
         string type = (string)ev["type"];
         switch (type)
         {
+            // ---- 文本 ----
             case "token":        AppendBubble((string)ev["text"]); break;
-            case "emotion":      SetEmotion((string)ev["dominant"]); break;
+            case "chat":         AppendBubble((string)ev["text"]); break;  // 完整回复
+
+            // ---- 情绪 ----
+            case "emotion":
+                {
+                    var vec = ev["vector"] as JObject;
+                    if (vec != null)
+                        SetEmotionVector(vec);       // 5 维全向量
+                    else
+                        SetEmotion((string)ev["dominant"]);  // 兼容 legacy dominant 字段
+                    break;
+                }
+
+            // ---- 动作（修正：走 ConceptStateMachine，全参 speed/amp/trait/lean）----
             case "action":
                 {
                     string name = (string)ev["name"];
                     float dur = ev.Value<float?>("duration") ?? 0f;
-                    PlayAction(name, dur);
+                    float spd = ev.Value<float?>("speed") ?? 1f;
+                    float amp = ev.Value<float?>("amplitude") ?? 1f;
+                    string trait = (string)ev["trait"] ?? "";
+                    float lean = ev.Value<float?>("lean") ?? 0f;
+                    var csm = GetComponent<ConceptStateMachine>();
+                    if (csm != null)
+                        csm.TriggerAction(name, dur, spd, amp, trait, lean);
+                    else
+                        PlayAction(name, dur);         // 回退：无 CSM 时用旧 Animator
                     break;
                 }
+
+            // ---- 自发动作意图（补）----
+            case "action_intent":
+                {
+                    string action = (string)ev["action"] ?? "[ACT_IDLE]";
+                    float dur = ev.Value<float?>("duration") ?? 0f;
+                    float spd = ev.Value<float?>("speed") ?? 1f;
+                    float amp = ev.Value<float?>("amplitude") ?? 1f;
+                    string trait = (string)ev["trait"] ?? "";
+                    float lean = ev.Value<float?>("lean") ?? 0f;
+                    var csm = GetComponent<ConceptStateMachine>();
+                    if (csm != null) csm.TriggerAction(action, dur, spd, amp, trait, lean);
+                    break;
+                }
+
+            // ---- 意识层概念（补）----
+            case "concepts":
+                {
+                    var items = ev["items"] as JArray;
+                    var csm = GetComponent<ConceptStateMachine>();
+                    if (csm != null && items != null)
+                    {
+                        foreach (var it in items)
+                        {
+                            var jt = it as JObject;
+                            if (jt != null)
+                            {
+                                bool primary = jt.Value<bool?>("primary") ?? false;
+                                if (primary)
+                                    csm.TriggerConcept(
+                                        (string)jt["name"],
+                                        jt.Value<float?>("weight") ?? 0f);
+                            }
+                        }
+                    }
+                    break;
+                }
+
+            // ---- 躁动度（补）----
+            case "restlessness":
+                {
+                    float v = ev.Value<float?>("value") ?? 0.2f;
+                    var csm = GetComponent<ConceptStateMachine>();
+                    if (csm != null) csm.SetRestlessness(v);
+                    break;
+                }
+
+            // ---- 工具调用结果（补）----
+            case "tool":
+                Debug.Log($"[{displayName}] 工具 {(string)ev["name"]}: {(string)ev["result"]}");
+                break;
+
+            // ---- 语音 ----
             case "speech_start": StartSpeech(); break;
             case "audio":        PlayAudio((string)ev["wav"]); break;
             case "talk_stop":    StopSpeech(); break;
+
+            // ---- 探索/想法 ----
             case "agent_command": ApplyAgentCommand(ev); break;
             case "agent_thought": Debug.Log($"[{displayName}] 想法: {(string)ev["thought"]}"); break;
+
+            // ---- 小镇/任务 ----
             case "quest_update":  QuestSystem.Instance?.OnQuestUpdate(npcId, ev); break;
-            case "town_task":     OnTownTask(ev); break;   // 小镇采集任务
+            case "town_task":     OnTownTask(ev); break;
+
             default: Debug.Log($"[{displayName}] 未处理事件: {type}"); break;
         }
     }
@@ -138,6 +218,23 @@ public class NpcAgent : MonoBehaviour
         {
             Debug.Log($"[{displayName}] 表情(未挂ExpressionController): {dominant}");
         }
+    }
+
+    /// <summary>5 维情绪全向量 → ExpressionController（用于 emotion 消息含 vector 字段时）</summary>
+    private void SetEmotionVector(JObject vec)
+    {
+        var expr = GetComponent<ExpressionController>();
+        if (expr == null) return;
+        float joy     = vec.Value<float?>("joy")     ?? 0f;
+        float anger   = vec.Value<float?>("anger")   ?? 0f;
+        float sadness = vec.Value<float?>("sadness") ?? 0f;
+        float calm    = vec.Value<float?>("calm")    ?? 0f;
+        float anxiety = vec.Value<float?>("anxiety") ?? 0f;
+        expr.ApplyEmotion("joy",       joy);
+        expr.ApplyEmotion("angry",     anger);
+        expr.ApplyEmotion("sad",       sadness);
+        expr.ApplyEmotion("neutral",   calm);
+        expr.ApplyEmotion("surprised", anxiety);
     }
 
     // ---------------- 动作 ----------------

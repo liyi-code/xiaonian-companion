@@ -76,6 +76,10 @@ public class ConceptStateMachine : MonoBehaviour
 
         // 记录身体 bob 基准位置（说话/挥手律动都相对它偏移，避免位移累积漂移/瞬跳）
         _bobBase = transform.position;
+
+        Debug.Log($"[ConceptSM] 就绪 — TriggerAction(speed/amplitude/lean/trait) 全部支持, " +
+                   $"restlessness={_restlessness:F2} breath={_breathRate:F2} " +
+                   $"humanoid={(_anim!=null&&_anim.avatar!=null&&_anim.avatar.isHuman)} autoTest={autoTestOnStart}");
     }
 
     // 外部（Python/clayer）设置躁动度：无聊→低，等待/期待→高

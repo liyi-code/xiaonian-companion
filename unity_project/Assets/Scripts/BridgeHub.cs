@@ -26,6 +26,10 @@ public class BridgeHub : MonoBehaviour
     private readonly Dictionary<string, NpcAgent> _agents = new Dictionary<string, NpcAgent>();
     private NpcManager _manager;
 
+    // 自动重连
+    private float _reconnectTimer;
+    private const float RECONNECT_INTERVAL = 3f;
+
     public event Action OnConnected;
     public event Action<List<NpcInfo>> OnReady;   // 连接后 Python 告知的 NPC 列表
 
@@ -43,6 +47,20 @@ public class BridgeHub : MonoBehaviour
 
     void OnDestroy() { Disconnect(); }
 
+    /// <summary>自动重连检测：每帧检查，断线后 3 秒重连</summary>
+    void Update()
+    {
+        if (!IsOpen)
+        {
+            _reconnectTimer += Time.deltaTime;
+            if (_reconnectTimer >= RECONNECT_INTERVAL)
+            {
+                _reconnectTimer = 0f;
+                Connect();
+            }
+        }
+    }
+
     // ---------------- 连接 ----------------
     public async void Connect()
     {
@@ -52,12 +70,13 @@ public class BridgeHub : MonoBehaviour
             _ws = new ClientWebSocket();
             await _ws.ConnectAsync(new Uri(wsUrl), _cts.Token);
             Debug.Log("[BridgeHub] 已连接小念大脑");
+            _reconnectTimer = 0f;   // 重置重连计时器
             OnConnected?.Invoke();
             _ = ReceiveLoop();
         }
         catch (Exception e)
         {
-            Debug.LogError("[BridgeHub] 连接失败: " + e.Message);
+            Debug.Log($"[BridgeHub] 连接失败（{RECONNECT_INTERVAL}s 后自动重连）: {e.Message}");
         }
     }
 
@@ -179,6 +198,11 @@ public class BridgeHub : MonoBehaviour
     // ---------------- Agent 注册 ----------------
     public void RegisterAgent(NpcAgent agent) { _agents[agent.npcId] = agent; }
     public void UnregisterAgent(string npcId) { _agents.Remove(npcId); }
+
+    public void SendRequest(string npcId, string type, object payload = null) =>
+        Send(npcId, type, o => {
+            if (payload is List<string> list) { o["context"] = JArray.FromObject(list); o["threshold"] = 0.15; }
+        });
 
     public void SendUserInput(string npcId, string text) =>
         Send(npcId, "user_input", o => o["text"] = text);
