@@ -112,6 +112,34 @@ public class NpcBridgeClient : MonoBehaviour
         BridgeHub.Instance?.SendRequest(npcId, "get_spontaneous_action", ctx);
     }
 
+    /// <summary>设置下一次自发动作请求的环境上下文（如时间/地点/玩家状态）</summary>
+    public void SetActionContext(List<string> context)
+    {
+        defaultActionContext = (context != null) ? new List<string>(context) : new List<string>();
+    }
+
+    /// <summary>发送感知刺激事件到 Python（玩家接近/社交等），经 BridgeHub 单连接发出</summary>
+    public void SendStimuli(List<string> stimuli, float weight)
+    {
+        if (stimuli == null || stimuli.Count == 0) return;
+        BridgeHub.Instance?.SendStimuli(npcId, stimuli, weight);
+    }
+
+    /// <summary>报告动作执行结果（成功/失败），强化或弱化环境-动作联想</summary>
+    public void ReportActionFeedback(bool success)
+    {
+        BridgeHub.Instance?.SendActionFeedback(npcId, success);
+    }
+
+    /// <summary>是否已连接（兼容旧 API；现统一由 BridgeHub 管理）</summary>
+    public bool IsConnected => BridgeHub.Instance != null && BridgeHub.Instance.IsOpen;
+
+    /// <summary>兼容旧调用方（如 ConceptStateMachine:325）</summary>
+    public void SetRestlessness(float v)
+    {
+        if (stateMachine != null) stateMachine.SetRestlessness(v);
+    }
+
     // ---- 音频播放 ----
     void PlayAudioBase64(string b64)
     {
