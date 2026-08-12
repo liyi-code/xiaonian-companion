@@ -207,6 +207,17 @@ public class BridgeHub : MonoBehaviour
     public void SendUserInput(string npcId, string text) =>
         Send(npcId, "user_input", o => o["text"] = text);
 
+    /// <summary>发送感知刺激事件（玩家接近/社交等），兼容旧 NpcBridgeClient.SendStimuli</summary>
+    public void SendStimuli(string npcId, List<string> stimuli, float weight) =>
+        Send(npcId, "stimuli", o => {
+            o["stimuli"] = JArray.FromObject(stimuli ?? new List<string>());
+            o["weight"] = weight;
+        });
+
+    /// <summary>上报动作执行结果，兼容旧 NpcBridgeClient.ReportActionFeedback</summary>
+    public void SendActionFeedback(string npcId, bool success) =>
+        Send(npcId, "action_feedback", o => { o["success"] = success; });
+
     public void SendWorldLoad(string npcId, string regionId, bool loaded) =>
         Send(npcId, "world_load", o => { o["region_id"] = regionId; o["loaded"] = loaded; });
 
