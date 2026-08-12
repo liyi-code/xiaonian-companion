@@ -141,33 +141,5 @@ public class NpcBridgeClient : MonoBehaviour
         else Debug.LogWarning($"[NpcBridge] 音频加载失败：{req.error}");
     }
 
-    // ---- 音频播放 ----
-    void PlayAudioBase64(string b64)
-    {
-        try
-        {
-            byte[] wav = Convert.FromBase64String(b64);
-            StartCoroutine(LoadAndPlay(wav));
-        }
-        catch (Exception e) { Debug.LogWarning($"[NpcBridge] 音频解码失败：{e.Message}"); }
-    }
-
-    System.Collections.IEnumerator LoadAndPlay(byte[] wav)
-    {
-        using var req = UnityWebRequestMultimedia.GetAudioClip(
-            "data:audio/wav;base64," + Convert.ToBase64String(wav), AudioType.WAV);
-        yield return req.SendWebRequest();
-        if (req.result == UnityWebRequest.Result.Success)
-        {
-            var clip = DownloadHandlerAudioClip.GetContent(req);
-            var src = GetComponent<AudioSource>();
-            if (src == null) src = gameObject.AddComponent<AudioSource>();
-            src.clip = clip;
-            src.Play();
-            if (stateMachine != null) stateMachine.OnAudioPlay(src);
-        }
-        else Debug.LogWarning($"[NpcBridge] 音频加载失败：{req.error}");
-    }
-
     private List<string> defaultActionContext = new List<string> { "空闲" };
 }
