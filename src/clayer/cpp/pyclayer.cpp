@@ -249,18 +249,17 @@ struct AssocGraph {
             }
         }
     }
+    // 衰减并修剪过弱边（含空邻居清理）。
+    // 注意：erase 操作在两层容器上，必须用迭代器式循环，不可在 range-for 里 erase。
     void decay(double factor = DECAY_PER_TURN) {
         turn += 1;
-        for (auto& kv : edges) {
-            auto& nbrs = kv.second;
+        for (auto git = edges.begin(); git != edges.end();) {
+            auto& nbrs = git->second;
             for (auto it = nbrs.begin(); it != nbrs.end();) {
                 it->second *= factor;
-                if (it->second < 1e-4)
-                    it = nbrs.erase(it);
-                else
-                    ++it;
+                it = (it->second < 1e-4) ? nbrs.erase(it) : std::next(it);
             }
-            if (nbrs.empty()) edges.erase(kv.first);
+            git = nbrs.empty() ? edges.erase(git) : std::next(git);
         }
     }
     void prune_node(const std::string& a) {
@@ -418,13 +417,19 @@ struct AssocGraph {
     }
 
     // ---------- 边权重 ----------
+    // 与 Python 版 assoc_graph.py:edge_weight 逐位对齐：
+    // 当 a/b 不在 mem 词频中(如 [ACT_SIT] / 椅子等动作/场景词)导致 denom<=0 时，
+    // 用 max(1e-6, co) 保底分母，而非直接返回 0——否则"记忆-动作闭环"永远哑火。
     double edge_weight(const std::string& a, const std::string& b, const MemoryStore& mem) const {
         double co = get_edge(a, b);
         if (co <= 0.0) return 0.0;
         double ca = mem.count(a);
         double cb = mem.count(b);
         double denom = ca + cb - co;
-        if (denom <= 0.0) return 0.0;
+        if (denom <= 0.0) {
+            if (co <= 0.0) return 0.0;
+            denom = std::max(1e-6, co);       // 保底分母，对齐 Python 版
+        }
         return co / denom;
     }
     std::vector<std::pair<std::string, double>> neighbors(const std::string& a) const {

@@ -115,6 +115,31 @@ def run_all(verbose: bool = True) -> bool:
     elif verbose:
         print(f"[parity] OK consolidate ({len(cpp_merged)} 项)")
 
+    # ---------- 用例 3.5：edge_weight denom 保底分母 ----------
+    # 模拟动作/场景词（如 [ACT_SIT]、椅子）在 mem 中无计数但有共现边的情况。
+    # C++ 旧版在此场景直接返回 0（BUG），Python 新版有 max(1e-6, co) 保底。
+    py_edge = PyGraph()
+    py_edge.link_group(["[ACT_SIT]", "椅子"])
+    py_edge_mem = PyMem()
+    # 只给 mem 观察其中一个词，另一个不在词频中 → denom <= 0 触发保底
+    py_edge_mem.observe("椅子")
+    w_py = py_edge.edge_weight("[ACT_SIT]", "椅子", py_edge_mem)
+    if w_py <= 0:
+        ok = False
+        if verbose:
+            print(f"[parity] FAIL edge_weight denom 保底: py={w_py} (应为正数)")
+    else:
+        # 同时验证 C++ 与 Python 一致
+        cpp_edge = pyclayer.AssocGraph.from_dict(py_edge.to_dict())
+        cpp_edge_mem = pyclayer.MemoryStore.from_dict(py_edge_mem.to_dict())
+        w_cpp = cpp_edge.edge_weight("[ACT_SIT]", "椅子", cpp_edge_mem)
+        if not _close(w_py, w_cpp):
+            ok = False
+            if verbose:
+                print(f"[parity] FAIL edge_weight 保底 py/cpp 不一致: py={w_py} cpp={w_cpp}")
+        elif verbose:
+            print(f"[parity] OK edge_weight denom 保底 (py={w_py:.6f}, cpp={w_cpp:.6f})")
+
     # ---------- 用例 4：to_dict 结构等价 ----------
     py_d = py_g.to_dict()
     cpp_d = cpp_g.to_dict()
