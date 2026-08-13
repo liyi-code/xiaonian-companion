@@ -786,6 +786,7 @@ class Assistant:
         self._maybe_record_signals(user_text)
 
         reply = None
+        cl_state = None   # 意识层状态（普通对话分支会赋值；想象力出口反馈据此判断）
 
         # —— 续发：上一条处于“待发送”状态，本条作为补全内容/联系人 ——
         if session.pending:
@@ -980,7 +981,24 @@ class Assistant:
         # —— 情绪感知：小念【自己说的话】里流露的情绪关键词 → 她自己的情绪波动 ——
         # 设计原则：玩家的输入只是“诱导”她说什么，不能直接决定她的情绪；
         # 情绪由她自己的表达决定（她说开心的话→开心涨，她说傲娇的话→小脾气涨）。
-        self._perceive_emotion(reply, source="self")
+        emo_delta = self._perceive_emotion(reply, source="self")
+
+        # —— 想象力出口的边际效用反馈（slope_utility 驯化）——
+        # 本次对话若动用了通路二合成概念（cl_state.imagined），就把「小念情绪变化」折算成
+        # 边际效用信号喂回该组合：她用了某组合后自己更开心/平静 → 效用正（保留并强化）；
+        # 她用了后更难过/不安/生气 → 效用负（下次检索时被过滤）。这是"驯化"而非"预测"。
+        if (cl_state is not None and getattr(cl_state, "imagined", None)
+                and self.mind is not None and emo_delta):
+            utility = (emo_delta.get("joy", 0.0) + emo_delta.get("calm", 0.0)
+                       - emo_delta.get("anger", 0.0)
+                       - emo_delta.get("sadness", 0.0)
+                       - emo_delta.get("anxiety", 0.0))
+            utility = max(-1.0, min(1.0, utility))
+            for combo_key, _score in cl_state.imagined[:1]:
+                try:
+                    self.mind.sleep_engine.record_feedback(combo_key, utility)
+                except Exception:
+                    pass
 
         return _strip_think(reply)
 
@@ -1578,16 +1596,16 @@ class Assistant:
     # 情绪感知：把用户话语 / 行为事件转化为小念的情绪波动
     # ----------------------------------------------------------------- #
     def _perceive_emotion(self, text, event=None, source="chat"):
-        """根据用户话语或行为事件，更新小念的情绪权重。"""
+        """根据用户话语或行为事件，更新小念的情绪权重。返回本次情绪增量 dict。"""
         if self.emotion is None:
-            return
+            return {}
         delta = None
         if CONFIG.get("emotion_llm_perceive", False) and text:
             try:
                 delta = self.llm_perceive(text)
             except Exception:
                 delta = None
-        self.emotion.perceive(text=text, event=event, source=source, delta=delta)
+        return self.emotion.perceive(text=text, event=event, source=source, delta=delta)
 
     def llm_perceive(self, text):
         """用 LLM 轻量判断【小念自己说的话】流露出的情绪增量（JSON）。失败返回 None。
