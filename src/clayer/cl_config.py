@@ -138,6 +138,23 @@ SLEEP_FORCED_PHRASE = "呼……我有点转不动啦，先去睡一会儿咯～
 SLEEP_SCREENING_PROMPT = ("记忆太多啦，我整理不动了。你可以：① 让我把词库备份另存一份；"
                           "② 直接清空词库重来；③ 挑一些想保留的词筛选另存。你想怎么处理呀？")
 
+# ---------- 双通路睡眠（睡眠时的两种记忆处理：语义压缩 + 创新组合，模拟想象力/创造力雏形） ----------
+# 通路一 = 既有 consolidate()（弱词并入强词的语义压缩，降遍历耗时）。
+# 通路二 = 创新组合：睡眠时把当前高权重节点（strength_score 超阈值的"活跃概念"）随机两两
+#          组合成"合成概念"，新权重 = 组合成员权重之和；合成概念存独立索引（不侵入主关联图，
+#          可一键回退），并可与其他合成概念/原概念建立弱连接（模拟"联想碰撞"）。
+# 表层（扩散激活）思索不出答案时，可回查合成概念索引作为"想象力出口"。
+DUAL_PATHWAY_ENABLED = True         # 总开关：False 则只跑通路一（行为与旧版完全一致）
+DUAL_COMBINE_THRESHOLD = 0.8        # 通路二只组合 strength_score 超过此值的高权重节点（起步设高，驯化期保守）
+DUAL_COMBINE_MIN_K = 2              # 每次组合最少概念数
+DUAL_COMBINE_MAX_K = 2              # 每次组合最多概念数（起步设 2，驯化期先只做二元组合）
+DUAL_COMBINE_BATCH = 12             # 单次睡眠最多生成多少个合成概念（防爆炸）
+DUAL_COMBO_CAPACITY = 400           # 合成概念索引容量上限（超出按 slope_utility 从低淘汰）
+DUAL_UTILITY_WINDOW = 6             # slope_utility 记录的最近 N 次调用斜率窗口
+DUAL_UTILITY_MIN = -1.0             # slope_utility 下限（负 = 该组合在当前情境有害，检索时丢弃）
+DUAL_WEAK_LINK = 0.25               # 合成概念之间的弱连接初始权重
+DUAL_RETRIEVE_THRESHOLD = 0.5       # 表层卡壳时，slope_utility 低于此值的合成概念不返回
+
 # ---------- 概率：基础概率 & 最大概率 ----------
 BASE_PROB = 0.02                # 基础概率：任何被解锁的概念至少有这么大机会被选中（随机性/灵感）
 MAX_PROB = 0.55                 # 最大概率：任何单个概念的选取概率上限（防独裁/防僵化）
@@ -198,6 +215,8 @@ OLLAMA_NUM_CTX = 8192
 # ---------- 持久化 ----------
 STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain_state")
 STATE_FILE = os.path.join(STATE_DIR, "mind.json")
+# 合成概念索引持久化文件（独立于 mind.json，避免破坏 C++/Python parity）
+DUAL_COMBO_FILE = os.path.join(STATE_DIR, "combos.json")
 # 睡眠机制的备份/筛选另存目录（STATE_DIR 已定义，放在其后）
 SLEEP_BACKUP_DIR = os.path.join(STATE_DIR, "backups")   # 备份另存目录
 SLEEP_EXPORT_DIR = os.path.join(STATE_DIR, "exports")   # 筛选另存目录

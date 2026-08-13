@@ -33,6 +33,8 @@ from _core import (
     normalized_entropy,
 )
 from affect import AffectState, Emotion
+# 双通路睡眠引擎（依赖注入，弱引用避免循环导入）
+from sleep import DualPathwaySleep
 
 # 启动自检：C++ 后端与 Python 基准数值一致才启用；不一致/异常时 _core 自动回退 Python。
 # 仅首次实例化 Consciousness 时跑一次，避免重复开销。
@@ -88,6 +90,8 @@ class ConsciousState:
     sleep_signal: str = ""        # "" | "sleepy_hint"(犯困) | "forced_sleep"(强制睡眠)
     sleep_state: str = "awake"    # "awake" | "sleepy" | "forced"
     traverse_ms: float = 0.0      # 本轮回合遍历记忆图的耗时(ms)
+    # ---------- 想象力出口（通路二合成概念回查） ----------
+    imagined: List[Tuple[str, float]] = field(default_factory=list)  # [(组合key, 得分), ...]
 
     def primary(self) -> "Thought":
         if not self.thoughts:
@@ -141,6 +145,10 @@ class Consciousness:
         # 挂起的异步学习线程（learn_async 启动）；think/consolidate 开始前先 join，
         # 保证 mem/graph 不被「后台写」与「think 读」并发（一致性契约，免加全局锁）。
         self._learn_thread: "threading.Thread | None" = None
+        # ---------- 双通路睡眠引擎（通路二：创新组合，模拟想象力） ----------
+        # 依赖注入：sleep.DualPathwaySleep 持弱引用回指本意识层，不反向导入。
+        self.sleep_engine = DualPathwaySleep()
+        self.sleep_engine.set_owner(self)
 
     # ---------- 主流程 ----------
     def think(self, text: str) -> ConsciousState:
@@ -152,6 +160,8 @@ class Consciousness:
         seeds = [c for c, _ in weighted]
         st.seeds = seeds
         if not seeds:
+            # 表层感知不出概念（卡壳）→ 想象力出口：回查高权重合成概念索引
+            st.imagined = self._recall_imagination([])
             return st
 
         # 2) 激活：初始能量 = 感知显著度(重要词更用力) + 该概念的历史统计显著度
@@ -197,6 +207,10 @@ class Consciousness:
         # 5.7) 竞争：竞争力 vigor(强度+匹配+唤醒+价值) -> 注意力分配(softmax) -> 标记主念
         self._compete(candidates, seed_set)
         st.thoughts = candidates
+
+        # 5.8) 想象力出口：扩散激活思索不出候选念（表层卡壳）时，回查通路二合成概念索引
+        if not candidates:
+            st.imagined = self._recall_imagination(seeds)
 
         # 主念(注意力最高)对外暴露为 chosen/event_strength，保持下游(token_bias/learn)兼容
         if candidates:
@@ -289,6 +303,20 @@ class Consciousness:
                 else:
                     self.graph.weaken(c, action, amt * 0.5)
 
+    # ---------- 想象力出口（表层卡壳 → 回查通路二合成概念索引） ----------
+    def _recall_imagination(self, seeds: List[str]) -> List[Tuple[str, float]]:
+        """
+        表层扩散激活/感知思索不出答案时的"想象力出口"：调用通路二合成的概念索引，
+        尝试用睡眠时碰撞出的联想来解决问题。返回 [(组合key, 得分), ...]。
+        由 DUAL_PATHWAY_ENABLED 开关控制；关闭/无索引时返回空列表，不影响主流程。
+        """
+        if not config.DUAL_PATHWAY_ENABLED:
+            return []
+        try:
+            return self.sleep_engine.retrieve_creative(seeds or [])
+        except Exception:
+            return []
+
     # ---------- 睡眠状态机（性能触发） ----------
     def _evaluate_sleep(self, st: ConsciousState) -> None:
         """
@@ -315,6 +343,26 @@ class Consciousness:
         """用户手动强制睡眠：立即进入强制态并压缩整合记忆。返回报告。"""
         self.sleep_state = "forced"
         return self.consolidate_memory()
+
+    def sleep_cycle(self) -> dict:
+        """
+        双通路睡眠：睡眠时并行两种记忆处理。
+          通路一：consolidate_memory() —— 语义压缩备份（弱词并入强词，降遍历耗时）。
+          通路二：sleep_engine.innovate_combine() —— 创新组合备份（高权重节点随机组合成
+                  合成概念，打新权重=成员权重和，存独立索引，模拟想象力/创造力雏形）。
+        通路二由 DUAL_PATHWAY_ENABLED 开关控制，关闭时行为与旧版完全一致（可一键回退）。
+        返回合并报告。
+        """
+        report = self.consolidate_memory()
+        if config.DUAL_PATHWAY_ENABLED:
+            created = self.sleep_engine.innovate_combine()
+            report["combo_created"] = created
+            report["combo_total"] = len(self.sleep_engine.combos)
+            report["pathway2_enabled"] = True
+        else:
+            report["combo_created"] = 0
+            report["pathway2_enabled"] = False
+        return report
 
     def consolidate_memory(self) -> dict:
         """
@@ -601,6 +649,11 @@ class Consciousness:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, path)
+        # 通路二合成概念索引独立持久化（不影响主 mind.json 的 C++/Python parity）
+        try:
+            self.sleep_engine.save()
+        except Exception:
+            pass
 
     @classmethod
     def load(cls, path: str = config.STATE_FILE, prng_seed=config.PRNG_SEED) -> "Consciousness":
@@ -613,6 +666,7 @@ class Consciousness:
             graph = AssocGraph.from_dict(data.get("graph", {}))
             obj = cls(mem=mem, graph=graph, prng_seed=prng_seed)
             obj.affect = AffectState.from_dict(data.get("affect", {}))
+            obj.sleep_engine.load()
             return obj
         except Exception:
             return cls(prng_seed=prng_seed)
@@ -624,6 +678,15 @@ class Consciousness:
         主念(注意力最高)主导语言倾向；副念作为潜意识的微妙底色。情绪基调一并注入。
         """
         if not state.thoughts:
+            # 表层卡壳：无常规意念，但有想象力出口的合成概念时，把它们作为"灵感"交给 LLM
+            if state.imagined:
+                combos = "、".join(k.replace("⋈", " + ") for k, _ in state.imagined[:3])
+                return (
+                    f"【潜意识联想场】表层一时想不到直接答案，但睡眠时碰撞出的灵感浮现了："
+                    f"{combos}。请尝试把这几组联想组合起来，用一个新颖的角度回应。"
+                    f"\n【底层价值导向】本意识以\"让使用者的生活越来越好\"为元目标，"
+                    f"请在回应中延续这份向善的倾向。"
+                )
             return ""
         ordered = sorted(state.thoughts, key=lambda t: t.attention, reverse=True)
         primary = ordered[0]
