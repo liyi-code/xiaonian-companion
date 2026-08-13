@@ -57,6 +57,7 @@ _*.py
 
 # Unity 大体积模型 / 临时调试脚本（不入库）
 *.vrm
+*.vrm.meta
 vendor_unity_skills/
 _grep2.txt
 build_log.txt
