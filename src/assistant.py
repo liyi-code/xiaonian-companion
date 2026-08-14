@@ -362,6 +362,23 @@ _SLEEP_NEG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 用户设置状态：让用户用自然语言切到"勿扰/专注"（小念在此状态不主动说话）。
+# 如"让我一个人安静一会儿/先别打扰我/我要专心/别跟我说话(一段时间)"。
+_DND_RE = re.compile(
+    r"(?:让|给|请)?(?:我|咱们)?(?:一个人)?\s*(?:安静|静一静|静静|冷静)\s*(?:一会儿|一下|会儿)?"
+    r"|(?:先)?别(?:来)?(?:打扰|烦|吵|跟我说话|理)我"
+    r"|我(?:要|想)(?:一个人|自己)?\s*(?:待|待会|静静|安静|专注|专心)"
+    r"|(?:我要)?专心(?:工作|学习|做事)?|开启?勿扰|进入勿扰",
+    re.IGNORECASE,
+)
+
+# 用户恢复常态：取消勿扰/专注
+_DND_OFF_RE = re.compile(
+    r"(?:我|咱们)?(?:回来|好了|没事|忙完|说完|回来了|可以)(?:了|啦)?\s*$"
+    r"|取消勿扰|结束勿扰|(?:不用|别)?(?:再)?勿扰(?:了)?|继续陪我|可以说话(?:了)?",
+    re.IGNORECASE,
+)
+
 
 def _clean(s):
     return re.sub(r"[。，！？\.!?吧呀啊吗呢~～\s]+$", "", s or "").strip()
@@ -477,6 +494,12 @@ def _route_action(text):
     t = (text or "").strip()
     if not t:
         return None
+
+    # 0.0) 用户状态：进入/退出勿扰（"让我一个人安静一会儿" / "取消勿扰"）
+    if _DND_OFF_RE.search(t):
+        return ("__user_state__", {"state": "normal"})
+    if _DND_RE.search(t):
+        return ("__user_state__", {"state": "dnd"})
 
     # 0) 发消息（最高优先级，避免和“打开”等动作混淆）
     s = _parse_send(t)
@@ -616,10 +639,61 @@ class Assistant:
         # 3D 世界感知上下文提供器（由 bridge 注入）；对话时小念据此“知道”周遭环境
         self._world_provider = None
 
+        # ---------- 用户状态机（主动找话题的状态门控） ----------
+        # 状态："normal"(正常) | "dnd"(勿扰) | "focus"(专注)；dnd/focus 时小念不主动说话。
+        # dnd_until：勿扰/专注的截止时间戳(epoch 秒)，过期自动回到 normal。
+        self.user_state = "normal"
+        self._state_until = 0.0
+
     def set_world_context_provider(self, fn):
         """桥接 3D 世界符号感知：注入一个返回当前世界符号快照文本的函数。
         system_prompt 会据此把“小念在 3D 世界里实时感知到的环境”告诉她，使对话也能结合世界。"""
         self._world_provider = fn
+
+    # ---------- 用户状态机（主动找话题的状态门控） ----------
+    def set_user_state(self, state: str, duration_seconds: float = 0.0):
+        """设置用户状态。state ∈ normal/dnd(勿扰)/focus(专注)。
+        duration_seconds>0 时，状态在持续该秒数后自动回落 normal（如"安静一小时"）。
+        """
+        import time as _t
+        if state not in ("normal", "dnd", "focus"):
+            state = "normal"
+        self.user_state = state
+        self._state_until = (_t.time() + duration_seconds) if duration_seconds > 0 else 0.0
+
+    def current_user_state(self) -> str:
+        """返回当前有效状态（过期自动回落 normal）。"""
+        import time as _t
+        if self._state_until and _t.time() >= self._state_until:
+            self.user_state = "normal"
+            self._state_until = 0.0
+        return self.user_state
+
+    def is_dnd(self) -> bool:
+        """是否处于勿扰/专注（此时小念不主动说话）。"""
+        return self.current_user_state() in ("dnd", "focus")
+
+    # ---------- 主动找话题（从睡眠成果挑种子，纯规则不调 LLM） ----------
+    def proactive_topic(self):
+        """
+        满足三条件后由 gui 调用：从意识层的睡眠成果里挑一个种子，套模板话术返回。
+        纯规则、不调用 LLM；用户回复后才启动 LLM 续聊。无种子返回 None。
+        """
+        if self.mind is None:
+            return None
+        try:
+            return self.mind.idle_topic()
+        except Exception:
+            return None
+
+    def topic_feedback(self, delta: float):
+        """用户对小念主动话题的反馈：正=加权，负=拉黑+缩短间隔。"""
+        if self.mind is None:
+            return
+        try:
+            self.mind.topic_feedback(delta)
+        except Exception:
+            pass
 
     def set_persona(self, persona: str):
         """注入角色人格设定（如村民职业）。仅追加到 system_prompt 前缀，不改通用大脑链路。"""
@@ -867,6 +941,18 @@ class Assistant:
                         on_tool("go_sleep", {}, "sleep_and_close")
                 elif tool_name == "__custom_skill__":
                     reply = args.get("reply") or "收到～"
+                    if on_token:
+                        on_token(reply)
+                elif tool_name == "__user_state__":
+                    # 用户状态切换：勿扰/恢复常态（小念在勿扰/专注时不主动说话）
+                    state = args.get("state", "normal")
+                    if state == "dnd":
+                        # 默认静默 1 小时（"让我一个人安静一会儿"）
+                        self.set_user_state("dnd", duration_seconds=3600)
+                        reply = "好～那我不打扰你啦，想找我的时候随时喊我哦💕"
+                    else:
+                        self.set_user_state("normal")
+                        reply = "我在呢～欢迎回来，想聊什么都可以～"
                     if on_token:
                         on_token(reply)
                 else:

@@ -63,6 +63,11 @@ class App:
                                      width=2, relief=tk.FLAT, command=self.view_memory)
         self.memory_btn.pack(side=tk.LEFT, padx=(0, 4))
 
+        # 用户状态按钮（勿扰/专注/正常）：切换小念是否主动说话
+        self.state_btn = tk.Button(self.bar, text="状态", font=("Microsoft YaHei", 10),
+                                   width=3, relief=tk.FLAT, command=self._toggle_user_state_menu)
+        self.state_btn.pack(side=tk.LEFT, padx=(0, 4))
+
         # 语音状态提示（可见，避免报错被藏进隐藏聊天框看不到）
         self.voice_status = tk.Label(self.bar, text="", font=("Microsoft YaHei", 9),
                                      fg="#ffd166", bg=CONFIG["input_bg"])
@@ -249,6 +254,29 @@ class App:
         self.chat.insert(tk.END, f"{who}：{text}\n\n")
         self.chat.config(state=tk.DISABLED)
         self.chat.see(tk.END)
+
+    # ---------- 用户状态切换（勿扰/专注/正常） ----------
+    def _toggle_user_state_menu(self):
+        """弹一个状态菜单：正常 / 勿扰(1小时) / 专注(1小时)。"""
+        win = tk.Toplevel(self.root)
+        win.title("状态")
+        win.geometry("260x150")
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        state = getattr(self.assistant, "user_state", "normal") if self.assistant else "normal"
+        tk.Label(win, text=f"当前状态：{state}（勿扰/专注时小念不主动说话）",
+                 font=("Microsoft YaHei", 9), fg="#888").pack(pady=6)
+        def _set(s, dur):
+            self.set_user_state(s, dur)
+            win.destroy()
+        tk.Button(win, text="正常（主动陪聊）", width=22,
+                  command=lambda: _set("normal", 0)).pack(pady=2)
+        tk.Button(win, text="勿扰 1 小时", width=22,
+                  command=lambda: _set("dnd", 3600)).pack(pady=2)
+        tk.Button(win, text="专注 1 小时", width=22,
+                  command=lambda: _set("focus", 3600)).pack(pady=2)
 
     # ---------- 聊天记录查看 ----------
     def view_history(self):
@@ -1626,6 +1654,9 @@ class App:
         self._last_idle_care = 0.0               # 上次空闲关心时间（限频，避免刷屏）
         self._reminders = []                     # 定时提醒登记：[{id, msg, due_text, after_id, fire_ts}]
         self._reminder_seq = 0                   # 提醒自增 id
+        self._last_topic_time = 0.0              # 上次主动找话题时间（限频 2 小时）
+        self._last_topic_seed = ""               # 上次主动话题的种子（反馈闭环定位）
+        self._topic_cooldown = 2 * 3600          # 主动找话题冷却（负反馈后缩短）
 
     def _enqueue_user(self, text):
         """把一条用户发言放入回复队列，并启动处理 worker（若未运行）。"""
@@ -1747,6 +1778,10 @@ class App:
             self._last_user_activity = now   # 重置空闲计时，避免一直刷
             self._proactive_idle_care(watcher)
 
+        # —— 条件3：主动找话题（从睡眠成果挑种子，纯规则不调 LLM）——
+        # 三条件：① 空闲 ≥5 分钟 ② 状态非勿扰/专注 ③ 距上次 ≥ 冷却（默认 2 小时）。
+        self._proactive_topic_check(idle_for)
+
     def _screen_context(self, app_name=""):
         """拿到当前屏幕的“客观描述”：视觉可用就截屏看懂，否则用窗口标题/程序名。"""
         ctx = ""
@@ -1793,6 +1828,48 @@ class App:
             return
         if msg:
             self.root.after(0, self._show_reply, CONFIG["name"], "（关心）" + msg, True)
+
+    # ---------- 主动找话题：从睡眠成果挑种子，纯规则不调 LLM ----------
+    def _proactive_topic_check(self, idle_for):
+        """三条件都满足才触发主动找话题：① 空闲≥5分钟 ② 状态非勿扰/专注 ③ 距上次≥冷却。"""
+        if self.assistant is None:
+            return
+        # 条件二：勿扰/专注时不主动说话
+        try:
+            if self.assistant.is_dnd():
+                return
+        except Exception:
+            pass
+        # 条件一：连续空闲 ≥ 5 分钟
+        if idle_for < 5 * 60:
+            return
+        # 条件三：距上次主动找话题 ≥ 冷却时间
+        now = time.time()
+        if (now - self._last_topic_time) < self._topic_cooldown:
+            return
+        # 满足三条件 → 主动检索（纯规则，不调 LLM）
+        try:
+            topic = self.assistant.proactive_topic()
+        except Exception:
+            topic = None
+        if not topic:
+            # 没有可用种子也不重置限频，避免无种子时空转
+            return
+        self._last_topic_time = now
+        self._last_topic_seed = topic.get("seed_key", "")
+        self.root.after(0, self._show_reply, CONFIG["name"], "（想起）" + topic.get("text", ""), True)
+
+    def set_user_state(self, state: str, duration_seconds: float = 0.0):
+        """用户状态按钮入口：normal/dnd(勿扰)/focus(专注)。"""
+        try:
+            if self.assistant is not None:
+                self.assistant.set_user_state(state, duration_seconds)
+        except Exception:
+            pass
+        labels = {"normal": "已回到正常状态，我会继续陪你～",
+                  "dnd": "好～先不打扰你，需要我时再喊我哦💕",
+                  "focus": "明白，专心做你的事吧，我安静陪着～"}
+        self.root.after(0, lambda s=labels.get(state, ""): self.append("系统", s) if s else None)
 
     def start_screen_watch(self):
         """启动屏幕活动监控：看用户在玩什么/用什么软件，适时给正反馈。"""

@@ -217,6 +217,32 @@ STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain_stat
 STATE_FILE = os.path.join(STATE_DIR, "mind.json")
 # 合成概念索引持久化文件（独立于 mind.json，避免破坏 C++/Python parity）
 DUAL_COMBO_FILE = os.path.join(STATE_DIR, "combos.json")
+
+# ---------- 主动找话题（从睡眠成果里挑种子，绝不随机抓网） ----------
+# 触发三条件由上层（gui 的 _proactive_tick）判断：① 用户连续空闲 ≥ IDLE 秒；② 状态非
+# 勿扰/专注；③ 距上次主动找话题 ≥ 限频间隔。满足才调 idle_topic() 取种子，全程纯规则、
+# 不调用 LLM（用户回复后才启动 LLM 续聊）。
+TOPIC_ENABLED = True                 # 总开关
+TOPIC_IDLE_SECONDS = 5 * 60          # 条件一：连续空闲 5 分钟
+TOPIC_COOLDOWN_SECONDS = 2 * 3600    # 条件三：距上次主动找话题 ≥ 2 小时（防骚扰）
+# 来源A（创新组合）：combos 里"还没被用过(use_count==0) 且 slope_utility 达标"的合成概念
+TOPIC_SOURCE_A_MIN_UTILITY = 0.15    # 合成概念 slope_utility 下限（太低说明组合无价值）
+TOPIC_SOURCE_A_WEIGHT_MIN = 0.8      # 合成概念权重下限（太弱的组合不值得拿出来）
+# 来源B（遗忘预警）：assoc_graph 里"正在快速衰减(闲置>grace) 但曾高频(关联数大)"的词
+TOPIC_SOURCE_B_GRACE = 4             # 闲置轮次超过此值视为"正在衰减"（复用近因遗忘的 grace 语义）
+TOPIC_SOURCE_B_ASSOC_MIN = 2         # 关联数下限（曾高频的代理：关联的概念数够多）
+# 反馈闭环（"越来越"原则）
+TOPIC_FEEDBACK_POSITIVE = 0.5        # 正反馈（用户乐意聊）给种子的加权增量
+TOPIC_FEEDBACK_NEGATIVE = -1.0       # 负反馈（无视/骂）拉黑该种子
+TOPIC_COOLDOWN_SHRINK_ON_NEGATIVE = 0.5  # 负反馈后主动间隔缩短倍率（"知错就改"）
+
+# 主动找话题话术模板（纯规则，{seed} / {other} 由引擎填充；绝不调用 LLM）
+TOPIC_TEMPLATES = [
+    "诶，我突然想到，你说过「{seed}」，会不会其实和「{other}」有点关系？",
+    "对了，「{seed}」这事，我还一直惦记着呢，后来怎么样了？",
+    "我刚刚整理记忆的时候，突然把「{seed}」和「{other}」连起来了，你有这种感觉吗？",
+    "说起来，「{seed}」——我好像快把它忘了，趁还记得，想再听你讲讲。",
+]
 # 睡眠机制的备份/筛选另存目录（STATE_DIR 已定义，放在其后）
 SLEEP_BACKUP_DIR = os.path.join(STATE_DIR, "backups")   # 备份另存目录
 SLEEP_EXPORT_DIR = os.path.join(STATE_DIR, "exports")   # 筛选另存目录

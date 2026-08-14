@@ -35,6 +35,8 @@ from _core import (
 from affect import AffectState, Emotion
 # 双通路睡眠引擎（依赖注入，弱引用避免循环导入）
 from sleep import DualPathwaySleep
+# 主动找话题引擎（从睡眠成果挑种子，纯规则不调 LLM）
+from topic import TopicEngine
 
 # 启动自检：C++ 后端与 Python 基准数值一致才启用；不一致/异常时 _core 自动回退 Python。
 # 仅首次实例化 Consciousness 时跑一次，避免重复开销。
@@ -149,6 +151,9 @@ class Consciousness:
         # 依赖注入：sleep.DualPathwaySleep 持弱引用回指本意识层，不反向导入。
         self.sleep_engine = DualPathwaySleep()
         self.sleep_engine.set_owner(self)
+        # ---------- 主动找话题引擎（从睡眠成果挑种子，纯规则不调 LLM） ----------
+        self.topic_engine = TopicEngine()
+        self.topic_engine.set_owner(self)
 
     # ---------- 主流程 ----------
     def think(self, text: str) -> ConsciousState:
@@ -316,6 +321,29 @@ class Consciousness:
             return self.sleep_engine.retrieve_creative(seeds or [])
         except Exception:
             return []
+
+    # ---------- 主动找话题（Idle Hook：从睡眠成果挑种子，纯规则不调 LLM） ----------
+    def idle_topic(self) -> dict | None:
+        """
+        主动找话题的 Idle Hook：由上层（gui 的 _proactive_tick，30 秒轮询）在满足三条件
+        （①空闲≥5分钟 ②状态非勿扰/专注 ③距上次≥2小时）时调用。
+        内部纯规则：从来源A（创新组合）/ 来源B（遗忘预警）取权重最高种子，套模板话术。
+        绝不调用 LLM（用户回复后才启动 LLM 续聊）；无可用种子返回 None。
+        返回 {source, seed_key, seed, other, text}。
+        """
+        if not config.TOPIC_ENABLED:
+            return None
+        try:
+            return self.topic_engine.pick_topic()
+        except Exception:
+            return None
+
+    def topic_feedback(self, delta: float) -> None:
+        """用户对小念主动话题的反馈（正=加权，负=拉黑+缩短间隔）。"""
+        try:
+            self.topic_engine.feedback(delta)
+        except Exception:
+            pass
 
     # ---------- 睡眠状态机（性能触发） ----------
     def _evaluate_sleep(self, st: ConsciousState) -> None:
