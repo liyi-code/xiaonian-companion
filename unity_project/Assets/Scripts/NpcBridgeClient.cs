@@ -37,9 +37,20 @@ public class NpcBridgeClient : MonoBehaviour
                 npcId = gameObject.name;
         }
 
+        // 场景里没有 BridgeHub 时自动补建（新建场景/联机场景通用，保证对话链路存在）
+        if (BridgeHub.Instance == null)
+        {
+            var go = new GameObject("Bridge");
+            go.AddComponent<BridgeHub>();
+        }
+
         if (expression == null) expression = GetComponentInChildren<ExpressionController>();
         if (stateMachine == null) stateMachine = GetComponentInChildren<ConceptStateMachine>();
         if (stateMachine == null) stateMachine = gameObject.AddComponent<ConceptStateMachine>();
+
+        // 原设计中 EnsureRegistered 没有任何调用方 → NPC 永远注册不进 BridgeHub，
+        // 桥的下行事件（回复/动作）全被 Route 丢弃。这里在启动时补上。
+        EnsureRegistered();
 
         PrintReadyLog();
     }

@@ -145,6 +145,8 @@ public class ConceptStateMachine : MonoBehaviour
     public void TriggerConcept(string name, float weight)
     {
         if (_anim == null || string.IsNullOrEmpty(name)) return;
+        // 无 AnimatorController 时 SetTrigger/SetFloat 会刷黄色警告且无效，直接跳过
+        if (_anim.runtimeAnimatorController == null) return;
         string trigger = Sanitize(name);
         // 概念名可能带空格/中文，Unity Trigger 名用 ASCII 更稳定：这里直接尝试
         // （第二关排查：打印实际触发的 Trigger 名，方便和 Animator 里建的逐一比对）
@@ -297,7 +299,7 @@ public class ConceptStateMachine : MonoBehaviour
     private IEnumerator HoldAction(string trigger, float duration)
     {
         yield return new WaitForSeconds(duration);
-        if (_anim != null)
+        if (_anim != null && _anim.runtimeAnimatorController != null)
         {
             try { _anim.CrossFade("Idle", 0.25f, 0); } catch { }
             if (HasAnimatorParameter(trigger))
@@ -305,8 +307,8 @@ public class ConceptStateMachine : MonoBehaviour
         }
     }
 
-    public void OnSpeechStart() { try { _anim.SetBool("IsTalking", true); } catch { } }
-    public void OnSpeechStop() { try { _anim.SetBool("IsTalking", false); } catch { } }
+    public void OnSpeechStart() { if (_anim != null && _anim.runtimeAnimatorController != null) { try { _anim.SetBool("IsTalking", true); } catch { } } }
+    public void OnSpeechStop() { if (_anim != null && _anim.runtimeAnimatorController != null) { try { _anim.SetBool("IsTalking", false); } catch { } } }
 
     public void OnAudioPlay(AudioSource src) { _audio = src; }
 
@@ -553,8 +555,25 @@ public class ConceptStateMachine : MonoBehaviour
         _nodCoroutine = null;
     }
 
-    // 关键：SetBoneLocalRotation 必须在 OnAnimatorIK 中调用
+    // 关键：SetBoneLocalRotation 原来只在 OnAnimatorIK 中调用——但 OnAnimatorIK
+    // 只有 Animator 正在播放 AnimatorController 时才会被 Unity 回调。重建后的
+    // VRM 实例 Animator 没有挂控制器 → OnAnimatorIK 从不触发 → 所有程序化身姿
+    // （挥手/点头/呼吸）算完却从未写到骨头上（现象：有气泡回复、无动作）。
+    // 修复：应用逻辑抽成 ApplyProceduralPose()，双入口兜底：
+    //   · 有控制器时走 OnAnimatorIK（官方推荐时机，与动画混合最稳）；
+    //   · 无控制器时走 LateUpdate（每帧必调，程序化身姿在无控制器模型上也能动）。
     void OnAnimatorIK(int layerIndex)
+    {
+        ApplyProceduralPose();
+    }
+
+    void LateUpdate()
+    {
+        if (_anim != null && _anim.runtimeAnimatorController == null)
+            ApplyProceduralPose();
+    }
+
+    private void ApplyProceduralPose()
     {
         if (_anim == null || _anim.avatar == null || !_anim.avatar.isHuman)
             return;

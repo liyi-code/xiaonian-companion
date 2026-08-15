@@ -238,6 +238,8 @@ class GameBridge:
         self._lock = threading.RLock()  # spawn_npc 与 _broadcast 可能同线程嵌套调用
         self._loop = None               # 运行中的事件循环（连接时缓存）
         self.npcs = {}                  # npc_id -> NPCBrain
+        # —— 动作教学间：等待 Unity 回执的录制配对（教学句 → 动作clip）——
+        self._pending_capture = None    # {trigger_text, meta, ts}
         # —— 小镇（我的世界村庄式自给自足小镇）：全局唯一，所有 NPC 共享 ——
         self.town = TownSim(self._broadcast)
         # 注意：不再额外 spawn 一个 "default" NPC——小念已由 villagers 的
@@ -702,6 +704,29 @@ class GameBridge:
                         msg.get("kind", "interact"),
                         msg.get("object_id"),
                     )
+                # ---- 动作教学间：Unity 录制回执（与教学句配对入库）----
+                elif mtype == "capture_result":
+                    self._handle_capture_result(msg)
+                # ---- 动作教学间：请求 Unity 录制最近 N 秒动作 ----
+                elif mtype == "teach_capture":
+                    self._pending_capture = {
+                        "trigger_text": str(msg.get("trigger_text") or "").strip(),
+                        "meta": msg.get("meta"),
+                        "ts": time.time(),
+                    }
+                    seconds = float(msg.get("seconds", 10) or 10)
+                    self._broadcast({"type": "capture_action",
+                                     "seconds": seconds})
+                    print(f"[桥] 教学录制：请求 Unity 截取最近 {seconds:.0f}s 动作", flush=True)
+                # ---- 动作库：播放学到的动画 ----
+                elif mtype == "play_action":
+                    self.play_action_clip(
+                        msg.get("action") or msg.get("action_id") or "",
+                        npc_id=npc_id)
+                # ---- 动作库：列出已学动作 ----
+                elif mtype == "list_actions":
+                    self._push(ws, {"type": "chat", "npc_id": npc_id,
+                                    "text": self.format_action_library()})
                 # ---- 3D 环境刺激（Unity Raycast 接近 / 玩家行为）----
                 elif mtype == "stimuli":
                     # {"stimuli":["玩家接近","社交","晚上","椅子"], "weight":0.9}
@@ -790,10 +815,92 @@ class GameBridge:
             with self._lock:
                 self._clients.discard(ws)
 
+    # ------------------------------------------------------------------ #
+    # 动作教学间（动作库闭环：录制回执配对 / 播放 / 列表）
+    # ------------------------------------------------------------------ #
+    def _handle_capture_result(self, msg):
+        """Unity 录完动作回执：{clip_path, duration, name}。
+        与最近的 _pending_capture（教学句）配对写进动作库。"""
+        import action_library as al
+        clip = str(msg.get("clip_path") or "").strip()
+        if not clip:
+            print("[桥] capture_result 缺少 clip_path", flush=True)
+            return
+        dur = float(msg.get("duration", 0) or 0)
+        name = (str(msg.get("name") or "").strip()
+                or os.path.basename(clip).rsplit(".", 1)[0].replace("_", " "))
+        pend = self._pending_capture
+        if pend and pend["ts"] and (time.time() - pend["ts"]) < 120 and pend["trigger_text"]:
+            aid = al.add_action(name, clip, duration=dur, source="unity_taught")
+            ok, m = al.add_prompt(aid, pend["trigger_text"], meta=pend["meta"])
+            self._broadcast({"type": "chat", "npc_id": "xiaonian", "text": m})
+            print(f"[桥] 动作入库：{clip} ← 「{pend['trigger_text']}」（{m}）", flush=True)
+        else:
+            al.add_action(name, clip, duration=dur, source="unity_taught")
+            self._broadcast({"type": "chat", "npc_id": "xiaonian",
+                             "text": f"动作「{name}」已入库～告诉我什么时候用它吧"})
+            print(f"[桥] 动作入库（未配对）：{clip}", flush=True)
+        self._pending_capture = None
+
+    def play_action_clip(self, name_or_id, npc_id="xiaonian"):
+        """按名字/ID 播放动作库里学到的动画（广播给 Unity 播放）。"""
+        import action_library as al
+        a = al.find_action(name_or_id)
+        if a is None:
+            print(f"[桥] 动作库没有「{name_or_id}」（控制台 /actions 查看）", flush=True)
+            return
+        self._broadcast({"type": "play_clip", "npc_id": npc_id,
+                         "clip_path": a["clip"], "duration": a["duration"]})
+        print(f"[桥] 播放动作：{a['name']} ({a['clip']})", flush=True)
+
+    def format_action_library(self):
+        import action_library as al
+        actions = al.list_actions()
+        if not actions:
+            return "动作库还是空的～在 Unity 里按 C 录一个动作，或说「我XX的时候你就做这个」教我。"
+        lines = [f"【动作库 · {len(actions)} 个动作】"]
+        for a in actions:
+            ps = "、".join(f"「{p['text']}」({p['strength']:.2f})" for p in a["prompts"]) or "（待配触发条件）"
+            lines.append(f"- {a['name']} [{a['id']}] {a['duration']:.1f}s → {ps}")
+        return "\n".join(lines)
+
+    def _console_loop(self):
+        """控制台测试命令：/actions 列表 /capture <秒> <触发词> /play <动作名>。"""
+        while True:
+            try:
+                line = input()
+            except (EOFError, KeyboardInterrupt):
+                return
+            line = (line or "").strip()
+            if not line:
+                continue
+            if line.startswith("/actions"):
+                print(self.format_action_library(), flush=True)
+            elif line.startswith("/capture"):
+                parts = line.split(" ", 2)
+                sec = float(parts[1]) if len(parts) > 1 and parts[1].replace(".", "").isdigit() else 10.0
+                trig = parts[2] if len(parts) > 2 else ""
+                from osc_bridge import parse_teaching
+                parsed = parse_teaching(trig) if trig else None
+                self._pending_capture = {
+                    "trigger_text": (parsed or {}).get("trigger_text", trig),
+                    "meta": (parsed or {}).get("meta"),
+                    "ts": time.time(),
+                }
+                self._broadcast({"type": "capture_action", "seconds": sec})
+                print(f"[桥] 请求录制最近 {sec:.0f}s（触发词：{trig or '无'}）", flush=True)
+            elif line.startswith("/play"):
+                name = line[5:].strip()
+                self.play_action_clip(name)
+            else:
+                print("[桥] 未知命令。可用：/actions  /capture <秒> [触发词]  /play <动作名>", flush=True)
+
     def run(self):
         print(f"[桥] 小念事件桥(多NPC)启动：ws://{self.host}:{self.port}")
         print(f"[桥] 已就绪 NPC：{list(self.npcs.keys())}")
         print("[桥] 等待 3D 游戏端连接……（Ctrl+C 退出）")
+        # 控制台测试命令（动作库闭环：/actions /capture /play）
+        threading.Thread(target=self._console_loop, daemon=True).start()
         # 启动所有 NPC 的主动探索引擎（后台线程，非被动等待玩家）
         if CONFIG.get("world_autonomy_enabled", True):
             for nid, brain in self.npcs.items():

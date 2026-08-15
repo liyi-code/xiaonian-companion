@@ -167,6 +167,11 @@ public class BridgeHub : MonoBehaviour
                 OnTownTask?.Invoke(ev);
                 break;
 
+            // ---- 动捕教学间：桥请求录制最近 N 秒动作（语音锚定切片）----
+            case "capture_action":
+                ActionRecorder.HandleCapture(ev);
+                break;
+
             default:
                 // 其它事件都按 npc_id 分派给对应 Agent
                 if (!string.IsNullOrEmpty(npcId) && _agents.TryGetValue(npcId, out var agent))

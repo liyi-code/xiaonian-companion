@@ -121,15 +121,16 @@ SAFE_LINE = {
     "iron": 4, "food": 12, "tool": 4,
 }
 
-# 建筑布局（相对小镇中心的网格坐标，供 Unity 摆放）
+# 建筑布局（六分街式商业街：x=±6.5 两侧店铺，z 沿街道纵向；与 unity_client/unity_skills/build_sixth_street.py
+# 和 unity_project Assets/Scripts/TownLayout.cs 严格对齐）
 BUILDINGS = {
-    "farm":        {"name": "农田",   "pos": {"x": -8, "y": 0, "z": 6}},
-    "lumber_mill": {"name": "伐木场", "pos": {"x": 8,  "y": 0, "z": 6}},
-    "mine":        {"name": "矿洞",   "pos": {"x": -8, "y": 0, "z": -6}},
-    "kitchen":     {"name": "厨房",   "pos": {"x": 0,  "y": 0, "z": 0}},
-    "market":      {"name": "市集",   "pos": {"x": 8,  "y": 0, "z": -6}},
-    "forge":       {"name": "铁匠铺", "pos": {"x": 0,  "y": 0, "z": 8}},
-    "well":        {"name": "水井",   "pos": {"x": 0,  "y": 0, "z": -8}},
+    "farm":        {"name": "农田",   "pos": {"x": -6.5, "y": 0, "z": 8}},
+    "lumber_mill": {"name": "伐木场", "pos": {"x": 6.5,  "y": 0, "z": 8}},
+    "mine":        {"name": "矿洞",   "pos": {"x": -6.5, "y": 0, "z": -8}},
+    "kitchen":     {"name": "厨房",   "pos": {"x": -6.5, "y": 0, "z": 0}},
+    "market":      {"name": "市集",   "pos": {"x": 6.5,  "y": 0, "z": 0}},
+    "forge":       {"name": "铁匠铺", "pos": {"x": 6.5,  "y": 0, "z": -8}},
+    "well":        {"name": "水井",   "pos": {"x": 0,    "y": 0, "z": 0}},
 }
 
 

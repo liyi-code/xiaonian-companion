@@ -44,6 +44,17 @@ public class NpcAgent : MonoBehaviour
         if (_audio == null) _audio = gameObject.AddComponent<AudioSource>();
         BridgeHub.Instance?.RegisterAgent(this);
         gameObject.name = "NPC_" + name + "_" + id;
+        EnsureBubbleUI();
+    }
+
+    void Start()
+    {
+        // 兜底：即便 Init 未被调用（场景里直接挂 NpcAgent），也保证气泡存在
+        EnsureBubbleUI();
+        // Init 可能在 BridgeHub.Awake 之前执行导致注册失败；
+        // Start 阶段 Instance 必已就绪，这里补注册一次（幂等），否则桥的下行事件无法路由到本 NPC
+        if (!string.IsNullOrEmpty(npcId))
+            BridgeHub.Instance?.RegisterAgent(this);
     }
 
     void OnDestroy() { BridgeHub.Instance?.UnregisterAgent(npcId); }
@@ -62,7 +73,7 @@ public class NpcAgent : MonoBehaviour
         {
             // ---- 文本 ----
             case "token":        AppendBubble((string)ev["text"]); break;
-            case "chat":         AppendBubble((string)ev["text"]); break;  // 完整回复
+            case "chat":         ShowBubble((string)ev["text"]); break;  // 完整回复：直接替换（避免与 token 流叠加重复）
 
             // ---- 情绪 ----
             case "emotion":
@@ -156,24 +167,111 @@ public class NpcAgent : MonoBehaviour
             case "quest_update":  QuestSystem.Instance?.OnQuestUpdate(npcId, ev); break;
             case "town_task":     OnTownTask(ev); break;
 
+            // ---- 动作库播放（学到的动捕动画）----
+            case "play_clip":     PlayClip((string)ev["clip_path"], ev.Value<float?>("duration") ?? 0f); break;
+
             default: Debug.Log($"[{displayName}] 未处理事件: {type}"); break;
         }
     }
 
     // ---------------- 对话气泡 ----------------
     private System.Text.StringBuilder _sb = new System.Text.StringBuilder();
+    private GameObject _bubbleRoot;                 // 自动生成的气泡根（含 WorldSpace Canvas）
+    private UnityEngine.UI.Text _autoBubble;        // 自动生成的旧版动态字体 Text（中文友好，无需生成 TMP 中文字体）
+
+    /// <summary>
+    /// 运行时自动生成对话气泡（WorldSpace Canvas + 背景 + 旧版动态字体 Text）。
+    /// Inspector 未挂 bubbleText（TMP）时兜底；旧版动态字体走系统字体回退，中文可直接显示。
+    /// </summary>
+    private void EnsureBubbleUI()
+    {
+        if (bubbleText != null)
+        {
+            _bubbleRoot = bubbleText.transform.parent != null
+                ? bubbleText.transform.parent.gameObject : bubbleText.gameObject;
+            return;
+        }
+        if (_bubbleRoot != null) return;
+
+        var root = new GameObject("ChatBubble");
+        root.transform.SetParent(transform, false);
+        root.transform.localPosition = new Vector3(0f, 1.75f, 0f);
+        var canvas = root.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.sortingOrder = 100;
+        var crect = canvas.GetComponent<RectTransform>();
+        crect.sizeDelta = new Vector2(480f, 120f);
+        // WorldSpace Canvas 的 1 单位 = 1 米：缩放后气泡约 96cm 宽
+        root.transform.localScale = new Vector3(0.002f, 0.002f, 0.002f);
+
+        var bgGo = new GameObject("Bg");
+        bgGo.transform.SetParent(root.transform, false);
+        var img = bgGo.AddComponent<UnityEngine.UI.Image>();
+        img.color = new Color(0.08f, 0.08f, 0.14f, 0.88f);
+        img.raycastTarget = false;
+        var bgRect = img.rectTransform;
+        bgRect.anchorMin = Vector2.zero; bgRect.anchorMax = Vector2.one;
+        bgRect.offsetMin = Vector2.zero; bgRect.offsetMax = Vector2.zero;
+
+        var textGo = new GameObject("Text");
+        textGo.transform.SetParent(root.transform, false);
+        _autoBubble = textGo.AddComponent<UnityEngine.UI.Text>();
+        var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        if (font == null) font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        _autoBubble.font = font;
+        _autoBubble.fontSize = 22;
+        _autoBubble.alignment = TextAnchor.MiddleCenter;
+        _autoBubble.horizontalOverflow = HorizontalWrapMode.Wrap;
+        _autoBubble.verticalOverflow = VerticalWrapMode.Overflow;
+        _autoBubble.color = Color.white;
+        _autoBubble.raycastTarget = false;
+        var tRect = _autoBubble.rectTransform;
+        tRect.anchorMin = Vector2.zero; tRect.anchorMax = Vector2.one;
+        tRect.offsetMin = new Vector2(10f, 6f); tRect.offsetMax = new Vector2(-10f, -6f);
+
+        _bubbleRoot = root;
+        root.SetActive(false);
+    }
+
+    private void SetBubbleText(string t)
+    {
+        if (bubbleText != null) bubbleText.text = t;
+        if (_autoBubble != null) _autoBubble.text = t;
+    }
+
+    private void SetBubbleVisible(bool v)
+    {
+        if (bubbleText != null && bubbleText.transform.parent != null)
+            bubbleText.transform.parent.gameObject.SetActive(v);
+        if (_bubbleRoot != null) _bubbleRoot.SetActive(v);
+    }
+
     private void AppendBubble(string piece)
     {
-        if (bubbleText == null) return;
+        if (bubbleText == null && _autoBubble == null) return;
         _sb.Append(piece);
-        bubbleText.text = _sb.ToString();
-        bubbleText.transform.parent?.gameObject.SetActive(true);
+        SetBubbleText(_sb.ToString());
+        SetBubbleVisible(true);
         _bubbleTimer = bubbleHoldSec;
     }
+
+    /// <summary>完整回复：直接替换气泡内容（桥在 token 流之后还会推一次完整 chat，避免重复叠加）</summary>
+    private void ShowBubble(string text)
+    {
+        if (bubbleText == null && _autoBubble == null) return;
+        _sb.Clear();
+        if (!string.IsNullOrEmpty(text)) _sb.Append(text);
+        SetBubbleText(text ?? "");
+        SetBubbleVisible(true);
+        _bubbleTimer = Mathf.Max(bubbleHoldSec, 8f);   // 完整回复多停留一会儿
+    }
+
     private void StartSpeech()
     {
+        // 只重置流式累积缓冲；不再清空气泡文本——TTS 的 speech_start 在完整 chat 之后才到达，
+        // 清空会把已显示的回复抹掉（这正是「回复只在终端、Unity 无文字」的隐藏帮凶之一）
         _sb.Clear();
-        if (bubbleText != null) bubbleText.text = "";
+        SetBubbleVisible(true);
     }
     private void StopSpeech() { /* 气泡保留 _bubbleTimer 秒后隐藏 */ }
 
@@ -182,8 +280,8 @@ public class NpcAgent : MonoBehaviour
         if (_bubbleTimer > 0)
         {
             _bubbleTimer -= Time.deltaTime;
-            if (_bubbleTimer <= 0 && bubbleText != null)
-                bubbleText.transform.parent?.gameObject.SetActive(false);
+            if (_bubbleTimer <= 0)
+                SetBubbleVisible(false);
         }
 
         // 小镇任务：到达目标建筑 → 上报完成一轮生产
@@ -303,11 +401,15 @@ public class NpcAgent : MonoBehaviour
     {
         if (_ctrl == null) return;
         string action = (string)ev["action"];
-        var pos = ev["pos"];
-        Vector3? target = pos != null
-            ? new Vector3((float?)pos["x"] ?? 0, (float?)pos["y"] ?? 0, (float?)pos["z"] ?? 0)
+        // 协议兼容双读：
+        // 标准为 pos(坐标字典) + target(物体id字符串)；
+        // 旧版 explorer 曾发 target(坐标字典) + object_id，两种都兜住，避免 move/look 拿到空坐标
+        var pos = ev["pos"] ?? (ev["target"] is JObject ? ev["target"] : null);
+        Vector3? target = pos is JObject p
+            ? new Vector3(p.Value<float?>("x") ?? 0f, p.Value<float?>("y") ?? 0f, p.Value<float?>("z") ?? 0f)
             : (Vector3?)null;
         string objId = (string)ev["target"];
+        if (string.IsNullOrEmpty(objId)) objId = (string)ev["object_id"];
         _ctrl.HandleCommand(action, target, objId);
     }
 
@@ -328,6 +430,42 @@ public class NpcAgent : MonoBehaviour
         if (_ctrl != null)
             _ctrl.HandleCommand("move", pos, target);
         Debug.Log($"[{displayName}] 接到小镇任务，前往: {target} @ {pos}");
+    }
+
+    // ---------------- 动作库播放（学到的动捕动画） ----------------
+    private Coroutine _clipTimer;
+
+    private void PlayClip(string path, float duration)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            Debug.LogWarning($"[{displayName}] play_clip 缺少 clip_path");
+            return;
+        }
+#if UNITY_EDITOR
+        var clip = UnityEditor.AssetDatabase.LoadAssetAtPath<AnimationClip>(path);
+        if (clip == null)
+        {
+            Debug.LogWarning($"[{displayName}] 找不到动画资源: {path}");
+            return;
+        }
+        var anim = GetComponent<Animation>();
+        if (anim == null) anim = gameObject.AddComponent<Animation>();
+        anim.AddClip(clip, clip.name);
+        anim.Play(clip.name);
+        Debug.Log($"[{displayName}] 播放学到的动作: {path} ({(duration > 0f ? duration : clip.length):F2}s)");
+        if (_clipTimer != null) StopCoroutine(_clipTimer);
+        _clipTimer = StartCoroutine(StopClip(duration > 0f ? duration : clip.length));
+#else
+        Debug.LogWarning("[play_clip] 仅编辑器模式支持");
+#endif
+    }
+
+    private System.Collections.IEnumerator StopClip(float d)
+    {
+        yield return new WaitForSeconds(Mathf.Max(0.5f, d));
+        var anim = GetComponent<Animation>();
+        if (anim != null) anim.Stop();
     }
 
 }

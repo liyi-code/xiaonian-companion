@@ -115,8 +115,9 @@ class AutonomousExplorer:
         if self._pending_interact and now >= self._pending_interact[1]:
             oid, _ = self._pending_interact
             self._pending_interact = None
+            # 与 NpcAgent.ApplyAgentCommand 对齐：物体 id 走 target 字段
             self.emit({"type": "agent_command", "action": "interact",
-                       "object_id": oid})
+                       "target": oid})
             self.emit({"type": "agent_thought",
                        "text": "我凑近看了看，感觉挺有意思的～"})
 
@@ -133,10 +134,10 @@ class AutonomousExplorer:
             self.ws.mark_seen(obj["id"])
             self.ws.mark_visited(obj["id"])
             self.emit({"type": "agent_command", "action": "move",
-                       "target": obj["pos"], "object_id": obj["id"]})
+                       "pos": obj["pos"], "target": obj["id"]})
             # 顺带把镜头转向目标（Unity 可借此抓一帧视觉快照）
             self.emit({"type": "agent_command", "action": "look",
-                       "target": obj["pos"]})
+                       "pos": obj["pos"]})
             # 估算到达时间，到了再交互
             d = self._dist(self.ws.agent_pos, obj["pos"])
             speed = max(0.5, float(CONFIG.get("world_move_speed", 2.5)))

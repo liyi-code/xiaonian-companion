@@ -88,3 +88,13 @@ unity_project/Temp/
 unity_project/Logs/
 unity_project/UserSettings/
 unity_project/.agents/
+
+# Photon Fusion SDK（第三方 SDK，不入公开仓库；新机器从 Asset Store 重新导入即可）
+unity_project/Assets/Photon/
+unity_project/Assets/Photon.meta
+
+# 场景快照备份与调试产物（本地保险/截图/测量导出）
+*.bak.meta
+unity_project/Assets/Screenshots/
+unity_project/Assets/Screenshots.meta
+furniture_measure.txt
