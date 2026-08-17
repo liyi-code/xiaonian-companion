@@ -31,15 +31,28 @@ public class ConceptStateMachine : MonoBehaviour
     public float bodyBobScale = 0.05f;       // 身体起伏幅度
     private float _bobPhase;
 
+    [Header("站姿")]
+    [Tooltip("手臂自然垂放角度。若手臂交叉/朝上，先切 mirrorArmZ；还不对再调这个角")]
+    public float restArmAngle = 75f;
+    [Tooltip("手臂绕Z轴方向：true=左臂+右臂-；false=反过来。双臂交叉/方向反了就先切它")]
+    public bool mirrorArmZ = true;
+    [Tooltip("待机头部抬升角(度)：补偿模型自带的前倾/低头，正值=抬头")]
+    public float headLiftAngle = 8f;
+
     [Header("自检(上线前关掉)")]
     public bool autoTestOnStart = false;     // 启动后自动播一次 ACT_WAVE，绕过 Python 验证动画链路
     public float autoTestDelay = 2f;
 
-    // 程序化挥手需要的骨骼（Humanoid 标准骨骼）
+    // 程序化挥手需要的骨骼（Humanoid 标准骨骼）——直接写 Transform 保证在无控制器的 VRM 上也必定生效
     private Transform _leftUpperArm;
     private Transform _leftLowerArm;
     private Transform _rightUpperArm;
     private Transform _rightLowerArm;
+    private Transform _spine;
+    private Transform _chest;
+    private Transform _neck;
+    private Transform _head;
+    private bool _poseDebugLogged;
 
     void Awake()
     {
@@ -47,13 +60,17 @@ public class ConceptStateMachine : MonoBehaviour
         _audio = GetComponent<AudioSource>();
         _bridge = GetComponent<NpcBridgeClient>();
 
-        // 缓存手臂骨骼用于程序化挥手
+        // 缓存骨骼用于程序化姿态
         if (_anim != null && _anim.avatar != null && _anim.avatar.isHuman)
         {
             _leftUpperArm = _anim.GetBoneTransform(HumanBodyBones.LeftUpperArm);
             _leftLowerArm = _anim.GetBoneTransform(HumanBodyBones.LeftLowerArm);
             _rightUpperArm = _anim.GetBoneTransform(HumanBodyBones.RightUpperArm);
             _rightLowerArm = _anim.GetBoneTransform(HumanBodyBones.RightLowerArm);
+            _spine = _anim.GetBoneTransform(HumanBodyBones.Spine);
+            _chest = _anim.GetBoneTransform(HumanBodyBones.Chest);
+            _neck = _anim.GetBoneTransform(HumanBodyBones.Neck);
+            _head = _anim.GetBoneTransform(HumanBodyBones.Head);
             Debug.Log($"[ConceptSM] 手臂骨骼: L.upper={_leftUpperArm?.name} L.lower={_leftLowerArm?.name} " +
                       $"R.upper={_rightUpperArm?.name} R.lower={_rightLowerArm?.name}");
         }
@@ -100,10 +117,10 @@ public class ConceptStateMachine : MonoBehaviour
         {
             t += Time.deltaTime;
             float breath = Mathf.Sin(t * 1.2f * _breathRate); // -1..1，正负对称→平均直立
-            // 仅 ±1.2 度的极轻胸腔起伏（绕 Z 轴左右微摆），不引入任何前倾(X轴)补偿。
+            // 仅 ±2.2 度的极轻胸腔起伏（绕 Z 轴左右微摆），不引入任何前倾(X轴)补偿。
             // 关键点：breath 是正弦（有正有负），平均 0 → 平均姿态=Identity（直立）。
-            _breathSpineRot = Quaternion.Euler(0f, 0f, breath * 1.2f);
-            _breathChestRot = Quaternion.Euler(0f, 0f, breath * 0.8f);
+            _breathSpineRot = Quaternion.Euler(breath * 2.2f, 0f, 0f);   // 前后轻晃=呼吸感
+            _breathChestRot = Quaternion.Euler(breath * 1.6f, 0f, 0f);
             yield return null;
         }
     }
@@ -479,7 +496,8 @@ public class ConceptStateMachine : MonoBehaviour
             // 钟摆主摆角（驱动整条手臂绕 Z 摆）
             float pend = Mathf.Sin(t * freq + wavePhase) * oscAmp * lift * swingEnv;
             // 大臂：外展(绕Z负) + 前举(绕X正) + 跟随钟摆的轻微摆动
-            float upperZ = -baseShoulder * lift + pend * 0.35f;
+            float shoulderSign = mirrorArmZ ? 1f : -1f;   // 与垂臂方向保持一致
+            float upperZ = shoulderSign * baseShoulder * lift + pend * 0.35f;
             float upperX = baseForward * lift;
             // 小臂：肘屈(绕X正) + 钟摆摆动（比大臂略大，手臂像整体在挥）
             float lowerX = baseElbow * lift;
@@ -526,7 +544,7 @@ public class ConceptStateMachine : MonoBehaviour
         _nodActive = true;
         float t = 0f;
         float freq = 7f * Mathf.Clamp(speed, 0.5f, 1.4f);      // 情绪高时点头更频
-        float maxHead = 16f * Mathf.Clamp(amplitude, 0.55f, 1.0f);
+        float maxHead = 22f * Mathf.Clamp(amplitude, 0.55f, 1.0f);   // 点头幅度加大，反应更明显
         float maxChest = 4f * Mathf.Clamp(amplitude, 0.55f, 1.0f);
         float fadeIn = 0.15f;
         float fadeOut = 0.2f;
@@ -569,34 +587,56 @@ public class ConceptStateMachine : MonoBehaviour
 
     void LateUpdate()
     {
-        if (_anim != null && _anim.runtimeAnimatorController == null)
-            ApplyProceduralPose();
+        // 无论有没有 AnimatorController 都执行：
+        //  · 无控制器：OnAnimatorIK 永不触发，必须靠 LateUpdate（旧路径只覆盖这种情况）；
+        //  · 有控制器但 IK Pass 没勾：OnAnimatorIK 也不触发，同样只能靠 LateUpdate；
+        //  · 有控制器且 IK Pass 勾选：两个入口都跑，写的是同一组值，幂等无害。
+        ApplyProceduralPose();
     }
 
     private void ApplyProceduralPose()
     {
         if (_anim == null || _anim.avatar == null || !_anim.avatar.isHuman)
             return;
-        // —— 叠加层（生命感）：挺胸微修正 + 呼吸 + 待机随机转头，永远生效，权重轻 ——
-        // Spine/Neck 与目标动作使用的 UpperArm/Head/Chest 不同轴，不会互相覆盖。
-        // —— 叠加层（生命感 + 挺直修正）——
-        // Starter Assets 的 Idle 自带含胸前倾，这里用固定后展把脊柱/胸拉回直立。
-        // 仅在非挥手/非点头时施加，避免和这些动作的胸部/手臂姿态打架。
+
+        if (!_poseDebugLogged)
+        {
+            _poseDebugLogged = true;
+            Debug.Log($"[ConceptSM] 姿态直写已启用: spine={_spine?.name} chest={_chest?.name} " +
+                      $"neck={_neck?.name} head={_head?.name} restArmAngle={restArmAngle} " +
+                      $"controller={( _anim.runtimeAnimatorController != null)}");
+        }
+
         bool poseBusy = _waveActive || _nodActive;
-        Quaternion spineFix = poseBusy ? Quaternion.identity : _standTallSpine;
-        Quaternion chestFix = poseBusy ? Quaternion.identity : _standTallChest;
+        // 挺直修正只针对"有控制器且其 Idle 含胸"的老模型（Starter Assets）；
+        // 无控制器的 VRM 没有前倾要纠正，套用会变成明显后仰——这里只在有控制器时施加。
+        bool hasController = _anim.runtimeAnimatorController != null;
+        Quaternion spineFix = (poseBusy || !hasController) ? Quaternion.identity : _standTallSpine;
+        Quaternion chestFix = (poseBusy || !hasController) ? Quaternion.identity : _standTallChest;
+
+        // —— 双通道写入：Animator 通道 + 直接写骨骼 Transform ——
+        // 无 AnimatorController 的 VRM 上 SetBoneLocalRotation 可能不生效（旧现象：
+        // 姿态从未显示、只剩服饰 SpringBone 在动），直接写 Transform 保证必定生效。
         _anim.SetBoneLocalRotation(HumanBodyBones.Spine, spineFix * _breathSpineRot);
-        // Chest = 挺直修正(固定后展) 叠加 呼吸(对称，平均直立)
         _anim.SetBoneLocalRotation(HumanBodyBones.Chest, chestFix * _breathChestRot);
         _anim.SetBoneLocalRotation(HumanBodyBones.Neck, _idleNeckRot);
+        if (_spine != null) _spine.localRotation = spineFix * _breathSpineRot;
+        if (_chest != null) _chest.localRotation = chestFix * _breathChestRot;
+        if (_neck != null) _neck.localRotation = _idleNeckRot;
+
+        // 手臂自然垂放（rig 无关实现：用"肩→肘"的实际世界方向，不依赖骨骼本地轴假设）
+        if (!_waveActive)
+        {
+            PointBoneDown(_leftUpperArm, _leftLowerArm);
+            if (_leftLowerArm != null) _leftLowerArm.localRotation = Quaternion.identity;
+        }
+        PointBoneDown(_rightUpperArm, _rightLowerArm);
+        if (_rightLowerArm != null) _rightLowerArm.localRotation = Quaternion.identity;
 
         // 阻尼跟随：当前值向目标值 Slerp，消除每帧硬跳 / 结束瞬移（解决“生硬”）
         float k = 1f - Mathf.Exp(-actionSmooth * Time.deltaTime);
 
         // 写入条件：动作进行中(_*Active) 或 收尾期(_*Tail>0)。
-        // 注意：绝不能用 cur 是否接近 identity 来判断是否写——挥手摆动经过 0 点时
-        // cur 会短暂接近 identity，若据此停写，手臂会瞬间掉回 Idle 又抬起（抖动）。
-        // 收尾期每帧递减 _*Tail，直到归零才真正停写，把手臂/头平滑拉回 Idle。
         bool waveWriting = _waveActive || _waveTail > 0f;
         if (waveWriting)
         {
@@ -604,6 +644,8 @@ public class ConceptStateMachine : MonoBehaviour
             _waveLowerArmCur = Quaternion.Slerp(_waveLowerArmCur, _waveLowerArmRot, k);
             _anim.SetBoneLocalRotation(HumanBodyBones.LeftUpperArm, _waveUpperArmCur);
             _anim.SetBoneLocalRotation(HumanBodyBones.LeftLowerArm, _waveLowerArmCur);
+            if (_leftUpperArm != null) _leftUpperArm.localRotation = _waveUpperArmCur;
+            if (_leftLowerArm != null) _leftLowerArm.localRotation = _waveLowerArmCur;
             if (!_waveActive) _waveTail -= Time.deltaTime;
         }
         bool nodWriting = _nodActive || _nodTail > 0f;
@@ -613,8 +655,26 @@ public class ConceptStateMachine : MonoBehaviour
             _nodChestCur = Quaternion.Slerp(_nodChestCur, _nodChestRot, k);
             _anim.SetBoneLocalRotation(HumanBodyBones.Head, _nodHeadCur);
             _anim.SetBoneLocalRotation(HumanBodyBones.Chest, _nodChestCur);
+            if (_head != null) _head.localRotation = _nodHeadCur;
+            if (_chest != null) _chest.localRotation = _nodChestCur;
             if (!_nodActive) _nodTail -= Time.deltaTime;
         }
+        // 待机抬头微调（补偿绑定位低头；负X=抬头）。点头时交给 nod 接管。
+        if (!nodWriting && _head != null)
+        {
+            var lift = Quaternion.Euler(-headLiftAngle, 0f, 0f);
+            _head.localRotation = lift;
+            _anim.SetBoneLocalRotation(HumanBodyBones.Head, lift);
+        }
+    }
+
+    /// <summary>把上臂转到竖直向下：用肩→肘的实际世界方向做 FromToRotation，与骨骼本地轴无关。</summary>
+    private void PointBoneDown(Transform shoulder, Transform elbow)
+    {
+        if (shoulder == null || elbow == null) return;
+        Vector3 dir = (elbow.position - shoulder.position).normalized;
+        if (dir.sqrMagnitude < 0.0001f) return;
+        shoulder.rotation = Quaternion.FromToRotation(dir, Vector3.down) * shoulder.rotation;
     }
 
     private IEnumerator FacePlayerOnce(float duration)

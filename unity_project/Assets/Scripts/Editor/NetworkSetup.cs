@@ -70,8 +70,12 @@ public static class NetworkSetup
         cc.height = 1.5f;
         cc.radius = 0.3f;
         cc.center = new Vector3(0f, 0.75f, 0f);
+        cc.skinWidth = 0.06f;      // 薄皮肤：减少卡边角时的爆炸性推挤
+        cc.stepOffset = 0.3f;      // 台阶高度容差
+        cc.slopeLimit = 50f;
         source.AddComponent<NetworkPlayerSync>();
         source.AddComponent<PlayerChatController>();         // 本机聊天入口（找小念对话）
+        source.AddComponent<ConceptStateMachine>();          // 玩家化身生命感：呼吸 + 待机转头 + 手臂自然垂放（告别十字站姿）
 
         var camGo = new GameObject("PlayerCamera");
         camGo.transform.SetParent(source.transform, false);

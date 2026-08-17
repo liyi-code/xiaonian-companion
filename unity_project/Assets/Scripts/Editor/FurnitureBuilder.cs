@@ -171,28 +171,44 @@ public static class FurnitureBuilder
         Debug.Log("[Furniture] 场景已保存");
     }
 
+    /// <summary>
+    /// 每件家具只挂【一个 BoxCollider】（按合并包围盒）。
+    /// 不用逐网格 MeshCollider：Kenney 模型碎面多，CharacterController 卡进细小凹陷
+    /// 会爆发巨大推挤力（现象：一碰沙发被弹穿屋顶）。Box 近似对静态家具完全够用且稳定。
+    /// </summary>
     static void EnsureColliders(GameObject go)
     {
-        foreach (var mf in go.GetComponentsInChildren<MeshFilter>())
-        {
-            if (mf.sharedMesh == null) continue;
-            if (mf.GetComponent<Collider>() != null) continue;
-            var mc = mf.gameObject.AddComponent<MeshCollider>();
-            mc.sharedMesh = mf.sharedMesh;
-        }
+        var rs = go.GetComponentsInChildren<Renderer>();
+        if (rs.Length == 0) return;
+        Bounds b = rs[0].bounds;
+        foreach (var r in rs) b.Encapsulate(r.bounds);
+
+        // 世界包围盒 → 本地空间（实例有旋转+缩放）
+        Vector3 centerLocal = go.transform.InverseTransformPoint(b.center);
+        Vector3 scale = go.transform.lossyScale;
+        Vector3 sizeLocal = new Vector3(
+            b.size.x / Mathf.Max(0.0001f, scale.x),
+            b.size.y / Mathf.Max(0.0001f, scale.y),
+            b.size.z / Mathf.Max(0.0001f, scale.z));
+
+        var bc = go.AddComponent<BoxCollider>();
+        bc.center = centerLocal;
+        bc.size = sizeLocal;
     }
 
     [MenuItem("Tools/VRHome/清除全部家具")]
     public static void ClearAll()
     {
+        var all = Object.FindObjectsOfType<GameObject>();
         int n = 0;
-        foreach (var go in Object.FindObjectsOfType<GameObject>())
+        foreach (var go in all)
         {
-            if (go.name.StartsWith(PREFIX))
-            {
-                Object.DestroyImmediate(go);
-                n++;
-            }
+            if (go == null) continue;                            // 已随父级销毁的跳过
+            if (!go.name.StartsWith(PREFIX)) continue;
+            var parent = go.transform.parent;
+            if (parent != null && parent.name.StartsWith(PREFIX)) continue;  // 只清根家具
+            Object.DestroyImmediate(go);
+            n++;
         }
         Debug.Log($"[Furniture] 已清除 {n} 件家具");
     }

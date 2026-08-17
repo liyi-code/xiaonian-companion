@@ -1,6 +1,10 @@
 // PlayerChatController.cs
 // 按 T 弹出聊天输入框，把文字发给当前激活的 NPC（默认找最近的 NpcBridgeClient）。
-// 挂在场景任意物体上（如 Main Camera 或一个空 GameObject）。
+// 挂法：随玩家预制体生成（联机）或挂在任意物体上（单机调试）。
+// 2026-08 修订：
+//   · 回车/小键盘回车在控件绘制前拦截（IMGUI 输入框会吃掉 Return，导致按回车没反应）
+//   · 聊天框打开时自动释放鼠标，关闭时自动重新锁定（不再出现"点发送后鼠标消失"）
+//   · 桥未连接时给出明确提示（需先运行 python -m src.bridge）
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -18,6 +22,9 @@ public class PlayerChatController : MonoBehaviour
     public float windowWidth = 400f;
     public float windowHeight = 120f;
 
+    /// <summary>聊天输入框是否打开（供玩家移动脚本判断要不要锁定鼠标）</summary>
+    public static bool ChatUiOpen { get; private set; }
+
     private bool _showInput = false;
     private string _text = "";
     private string _hint = "";
@@ -27,11 +34,20 @@ public class PlayerChatController : MonoBehaviour
 
     void Update()
     {
-        if (Input.GetKeyDown(chatKey) && !_showInput)
+        if (Input.GetKeyDown(chatKey))
         {
-            _showInput = true;
-            _text = "";
-            ResolveTarget();
+            if (!_showInput)
+            {
+                _showInput = true;
+                _text = "";
+                _hint = "";
+                ResolveTarget();
+                ReleaseCursor();
+            }
+            else
+            {
+                CloseChat();
+            }
         }
     }
 
@@ -40,11 +56,27 @@ public class PlayerChatController : MonoBehaviour
         if (!_showInput) return;
         EnsureStyles();
 
+        // 关键：回车/ESC 必须在绘制控件【之前】拦截——
+        // IMGUI 的 TextField 获得焦点后会把 Return 事件吃掉，绘制后再检查永远收不到。
+        Event e = Event.current;
+        if (e.type == EventType.KeyDown &&
+            (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter))
+        {
+            Submit();
+            e.Use();
+            return;
+        }
+        if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
+        {
+            CloseChat();
+            e.Use();
+            return;
+        }
+
         float x = (Screen.width - windowWidth) * 0.5f;
         float y = Screen.height - windowHeight - 40f;
-        Rect rect = new Rect(x, y, windowWidth, windowHeight);
 
-        GUI.Box(rect, $"跟小念说话 ({chatKey})", _boxStyle);
+        GUI.Box(new Rect(x, y, windowWidth, windowHeight), $"跟小念说话 ({chatKey})", _boxStyle);
         GUILayout.BeginArea(new Rect(x + 10f, y + 30f, windowWidth - 20f, windowHeight - 40f));
         GUILayout.BeginHorizontal();
         GUI.SetNextControlName("ChatInput");
@@ -59,18 +91,6 @@ public class PlayerChatController : MonoBehaviour
         GUILayout.Space(6f);
         GUILayout.Label(_hint, new GUIStyle(GUI.skin.label) { normal = { textColor = Color.yellow } });
         GUILayout.EndArea();
-
-        Event e = Event.current;
-        if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Return)
-        {
-            Submit();
-            e.Use();
-        }
-        if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
-        {
-            _showInput = false;
-            e.Use();
-        }
     }
 
     void Submit()
@@ -78,9 +98,18 @@ public class PlayerChatController : MonoBehaviour
         string t = _text.Trim();
         if (string.IsNullOrEmpty(t)) return;
 
+        // 桥没连（Python 大脑没跑）时明确提示，别再静默吞消息
+        bool bridgeOk = BridgeHub.Instance != null && BridgeHub.Instance.IsOpen;
+        if (!bridgeOk)
+        {
+            _hint = "桥未连接：请先运行  .\\venv\\Scripts\\python.exe -m src.bridge";
+            Debug.LogWarning("[PlayerChat] 桥未连接，消息未发出");
+            return;
+        }
+
         ResolveTarget();
         string receiverName = null;
-        if (targetNpc != null && targetNpc.IsConnected)
+        if (targetNpc != null)
         {
             Debug.Log($"[PlayerChat] 发送给 {targetNpc.npcId}: {t}");
             targetNpc.SendChat(t);
@@ -94,14 +123,34 @@ public class PlayerChatController : MonoBehaviour
         }
         else
         {
-            _hint = "目标 NPC 未连接，也找不到 BridgeHub/Agent。";
+            _hint = "没找到小念（NpcBridgeClient/Agent 都不在场景里）。";
             Debug.LogWarning("[PlayerChat] 无法发送：无可用通道");
             return;
         }
 
         _hint = $"→ {receiverName}: {t}";
         _text = "";
+        CloseChat();
+    }
+
+    void CloseChat()
+    {
         _showInput = false;
+        LockCursor();
+    }
+
+    static void ReleaseCursor()
+    {
+        ChatUiOpen = true;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+    }
+
+    static void LockCursor()
+    {
+        ChatUiOpen = false;
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
     }
 
     void ResolveTarget()
@@ -111,7 +160,6 @@ public class PlayerChatController : MonoBehaviour
         var clients = FindObjectsOfType<NpcBridgeClient>();
         var agents = FindObjectsOfType<NpcAgent>();
 
-        // 优先用 NpcBridgeClient；没有再用 NpcAgent
         if (clients.Length == 1) { targetNpc = clients[0]; return; }
         if (agents.Length == 1) { targetAgent = agents[0]; return; }
 

@@ -41,6 +41,10 @@ public class BridgeHub : MonoBehaviour
     {
         Instance = this;
         _manager = FindObjectOfType<NpcManager>();
+        // 关键：WebSocket 收包线程靠 UnityMainThreadDispatcher 把事件切回主线程派发。
+        // Enqueue 是纯静态排队，若场景里没有调度器实例，队列永远没人消费——
+        // 表现为"桥终端有反应，但 Unity 里 NPC 无回应/无气泡"。这里强制创建。
+        _ = UnityMainThreadDispatcher.Instance;
     }
 
     void Start() { Connect(); }

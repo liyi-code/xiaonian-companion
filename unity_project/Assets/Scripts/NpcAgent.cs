@@ -284,6 +284,9 @@ public class NpcAgent : MonoBehaviour
                 SetBubbleVisible(false);
         }
 
+        // 气泡永远面向玩家相机（公告板），避免从背后看文字镜像
+        BillboardBubble();
+
         // 小镇任务：到达目标建筑 → 上报完成一轮生产
         if (_townTaskTarget != null)
         {
@@ -297,6 +300,28 @@ public class NpcAgent : MonoBehaviour
                 _townTaskObjId = null;
             }
         }
+    }
+
+    void BillboardBubble()
+    {
+        // 相机兜底：联机玩家相机打过 MainCamera 标签，但旧预制体/直开场景可能没有，
+        // 找不到就退而求其次用任一启用中的相机，保证公告板永远有人脸可朝。
+        var cam = Camera.main;
+        if (cam == null)
+        {
+            var cams = FindObjectsOfType<Camera>();
+            cam = System.Linq.Enumerable.FirstOrDefault(cams, c => c.enabled && c.gameObject.activeInHierarchy)
+                  ?? (cams.Length > 0 ? cams[0] : null);
+        }
+        if (cam == null) return;
+        Vector3 f = cam.transform.position - transform.position;
+        f.y = 0f;
+        if (f.sqrMagnitude < 0.001f) return;
+        Quaternion rot = Quaternion.LookRotation(f);
+        if (_bubbleRoot != null && _bubbleRoot.activeSelf)
+            _bubbleRoot.transform.rotation = rot;
+        if (bubbleText != null && bubbleText.transform.parent != null)
+            bubbleText.transform.parent.rotation = rot;
     }
 
     // ---------------- 表情（面部 BlendShape）----------------

@@ -26,10 +26,10 @@ public class NpcBodyCollider : MonoBehaviour
 
     void Start()
     {
-        // 自动推算尺寸（若未手动指定）
+        Bounds b = GetRendererBounds();
+        // 自动推算尺寸（若未手动指定）：按角色渲染包围盒
         if (radius <= 0f || height <= 0f)
         {
-            Bounds b = GetRendererBounds();
             if (b.size.y > 0.01f)
             {
                 if (height <= 0f) height = b.size.y;
@@ -37,7 +37,6 @@ public class NpcBodyCollider : MonoBehaviour
             }
             else
             {
-                // 兜底：按常见人形身高 ~1.6m 估算
                 if (height <= 0f) height = 1.6f;
                 if (radius <= 0f) radius = 0.22f;
             }
@@ -47,15 +46,14 @@ public class NpcBodyCollider : MonoBehaviour
         col.isTrigger = isTrigger;
         col.radius = radius;
         col.height = height;
-        // 胶囊中心放在身体中部（方向默认 Y 轴，center.y = 0 即包围盒中心附近）
-        col.center = new Vector3(0f, 0f, 0f);
-        // 若根物体不是模型中心，把胶囊往上挪到脚底以上 height/2
-        col.center = new Vector3(0f, 0f, 0f);
+        // 关键：胶囊中心必须放在模型包围盒中心（本地坐标）——之前写死 (0,0,0)，
+        // 模型脚底在原点时胶囊只包住下半身，玩家能穿过她胸口/头。
+        col.center = transform.InverseTransformPoint(b.center);
 
         var rb = GetComponent<Rigidbody>();
         rb.isKinematic = kinematic;
         rb.useGravity = false;
-        rb.constraints = RigidbodyConstraints.FreezeAll; // 完全由脚本控制，不被物理推
+        rb.constraints = RigidbodyConstraints.FreezeAll;
         rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
     }
 

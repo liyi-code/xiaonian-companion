@@ -45,6 +45,7 @@ public class NetworkPlayerSync : NetworkBehaviour
                 go.AddComponent<AudioListener>();
             }
             _cam.transform.localPosition = new Vector3(0f, headHeight, 0f);
+            _cam.gameObject.tag = "MainCamera";   // 供气泡公告板等 Camera.main 使用
 
             // 锁定鼠标（Esc 释放），转向手感才正常
             Cursor.lockState = CursorLockMode.Locked;
@@ -66,13 +67,14 @@ public class NetworkPlayerSync : NetworkBehaviour
     {
         if (!Object.HasStateAuthority) return;
 
-        // Esc 释放鼠标（聊天时用）
-        if (Input.GetKeyDown(KeyCode.Escape))
+        // Esc 释放鼠标；聊天框打开时不允许重新锁定（防"点发送后鼠标消失"）
+        if (Input.GetKeyDown(KeyCode.Escape) && !PlayerChatController.ChatUiOpen)
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
-        if (Input.GetMouseButtonDown(0) && Cursor.lockState != CursorLockMode.Locked)
+        if (Input.GetMouseButtonDown(0) && Cursor.lockState != CursorLockMode.Locked
+            && !PlayerChatController.ChatUiOpen)
         {
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
