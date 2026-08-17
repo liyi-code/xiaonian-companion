@@ -24,9 +24,6 @@ public class NpcAgent : MonoBehaviour
     private AudioSource _audio;
     private float _bubbleTimer;
 
-    // 小镇采集任务：当前要去的目标建筑位置（世界坐标），到达即上报生产完成
-    private Vector3? _townTaskTarget;
-    private string _townTaskObjId;
 
     // 表情维度 → ExpressionController 接受的键
     private static readonly HashSet<string> _emotions = new HashSet<string>
@@ -163,9 +160,6 @@ public class NpcAgent : MonoBehaviour
             case "agent_command": ApplyAgentCommand(ev); break;
             case "agent_thought": Debug.Log($"[{displayName}] 想法: {(string)ev["thought"]}"); break;
 
-            // ---- 小镇/任务 ----
-            case "quest_update":  QuestSystem.Instance?.OnQuestUpdate(npcId, ev); break;
-            case "town_task":     OnTownTask(ev); break;
 
             // ---- 动作库播放（学到的动捕动画）----
             case "play_clip":     PlayClip((string)ev["clip_path"], ev.Value<float?>("duration") ?? 0f); break;
@@ -287,19 +281,6 @@ public class NpcAgent : MonoBehaviour
         // 气泡永远面向玩家相机（公告板），避免从背后看文字镜像
         BillboardBubble();
 
-        // 小镇任务：到达目标建筑 → 上报完成一轮生产
-        if (_townTaskTarget != null)
-        {
-            float d = Vector3.Distance(transform.position, _townTaskTarget.Value);
-            if (d < 1.5f)
-            {
-                TownView town = FindObjectOfType<TownView>();
-                town?.ReportTownEvent(npcId, _townTaskObjId);
-                Debug.Log($"[{displayName}] 到达 {_townTaskObjId}，上报生产完成");
-                _townTaskTarget = null;
-                _townTaskObjId = null;
-            }
-        }
     }
 
     void BillboardBubble()
@@ -436,25 +417,6 @@ public class NpcAgent : MonoBehaviour
         string objId = (string)ev["target"];
         if (string.IsNullOrEmpty(objId)) objId = (string)ev["object_id"];
         _ctrl.HandleCommand(action, target, objId);
-    }
-
-    // ---------------- 小镇采集任务 ----------------
-    private void OnTownTask(JObject ev)
-    {
-        string target = (string)ev["objective"]?["target"];
-        if (string.IsNullOrEmpty(target)) return;
-        // 在小镇建筑坐标表里找目标位置（与 Python src/town.py BUILDINGS 对齐）
-        Vector3? pos = TownLayout.PosOf(target);
-        if (pos == null)
-        {
-            Debug.LogWarning($"[{displayName}] 未知建筑目标: {target}");
-            return;
-        }
-        _townTaskObjId = target;
-        _townTaskTarget = pos;
-        if (_ctrl != null)
-            _ctrl.HandleCommand("move", pos, target);
-        Debug.Log($"[{displayName}] 接到小镇任务，前往: {target} @ {pos}");
     }
 
     // ---------------- 动作库播放（学到的动捕动画） ----------------

@@ -33,10 +33,6 @@ public class BridgeHub : MonoBehaviour
     public event Action OnConnected;
     public event Action<List<NpcInfo>> OnReady;   // 连接后 Python 告知的 NPC 列表
 
-    // 小镇（我的世界村庄式自给自足）全局事件 —— town_state / town_task 不带 npc_id，全局广播
-    public event Action<JObject> OnTownState;
-    public event Action<JObject> OnTownTask;
-
     void Awake()
     {
         Instance = this;
@@ -163,14 +159,6 @@ public class BridgeHub : MonoBehaviour
                 _manager?.DespawnAgent((string)ev["npc_id"]);
                 break;
 
-            // ---- 小镇全局广播（自给自足村庄）----
-            case "town_state":
-                OnTownState?.Invoke(ev);
-                break;
-            case "town_task":
-                OnTownTask?.Invoke(ev);
-                break;
-
             // ---- 动捕教学间：桥请求录制最近 N 秒动作（语音锚定切片）----
             case "capture_action":
                 ActionRecorder.HandleCapture(ev);
@@ -239,14 +227,6 @@ public class BridgeHub : MonoBehaviour
 
     public void SendVisualSnapshot(string npcId, string camPos, string b64) =>
         Send(npcId, "visual_snapshot", o => { o["cam_pos"] = camPos; o["image_b64"] = b64; });
-
-    public void SendQuestEvent(string npcId, string kind, string objectId = null, string npcFrom = null) =>
-        Send(npcId, "quest_event", o =>
-        {
-            o["kind"] = kind;
-            if (objectId != null) o["object_id"] = objectId;
-            if (npcFrom != null) o["npc_id_from"] = npcFrom;
-        });
 }
 
 [Serializable]

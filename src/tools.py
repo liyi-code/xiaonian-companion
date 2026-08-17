@@ -10,7 +10,6 @@ import time as _time
 import datetime
 
 from launcher import launcher
-from transport.registry import send_message as _send_message
 from config import CONFIG
 
 try:
@@ -391,37 +390,6 @@ def remember(args, memory):
     fact = args.get("fact", "")
     memory.remember_fact(fact)
     return f"好的，我已经记住了：{fact}"
-
-
-@tool({
-    "type": "function",
-    "function": {
-        "name": "send_message",
-        "description": (
-            "通过小念自己的微信或 QQ 账号，给某个联系人/群发送一条消息。"
-            "当用户说“给微信/QQ 的某某发消息：内容”时使用。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "app": {
-                    "type": "string",
-                    "enum": ["微信", "QQ"],
-                    "description": "用哪个软件发，只能是 '微信' 或 'QQ'",
-                },
-                "contact": {"type": "string", "description": "联系人名字，例如 '张三'、'文件传输助手'"},
-                "message": {"type": "string", "description": "要发送的消息内容"},
-            },
-            "required": ["app", "contact", "message"],
-        },
-    },
-})
-def send_message(args, memory):
-    app = args.get("app", "")
-    contact = args.get("contact", "")
-    message = args.get("message", "")
-    ok, msg = _send_message(app, contact, message)
-    return msg
 
 
 @tool({

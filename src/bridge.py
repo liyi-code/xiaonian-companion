@@ -7,7 +7,7 @@
     3. 把结果以标准化 JSON 事件推回游戏端。
 
 游戏端（Unity / Godot / Unreal …）只要会 WebSocket + 解析 JSON，就能驱动任意
-3D 模型。事件协议见文件底部 EVENT 说明，或 README。
+3D 模型。事件协议见 README。
 
 运行：
     venv\\Scripts\\python.exe -m src.bridge            # 默认 ws://127.0.0.1:8765
@@ -38,14 +38,6 @@ except ImportError:
     print("[桥] 缺少依赖 websockets，请先：venv\\Scripts\\python.exe -m pip install websockets")
     raise
 
-# 3D 世界感知 + 主动探索（建立在意识模型之上）
-from world_state import SymbolicWorldState
-from explorer import AutonomousExplorer
-
-# 小镇（我的世界村庄式自给自足小镇）：经济模拟 + 预置村民职业
-from town import TownSim
-from villagers import default_spawns, preset_by_id
-
 # 默认动作意图码（Unity 端需实现同名的动画/状态机触发）
 DEFAULT_ACTIONS = [
     "[ACT_IDLE]",       # 待机
@@ -63,11 +55,8 @@ DEFAULT_ACTIONS = [
 # --------------------------------------------------------------------------- #
 # 构造小念大脑（与 gui.py 启动逻辑保持一致，只是不建任何 tkinter/界面）
 # --------------------------------------------------------------------------- #
-def build_assistant(persona: str = None):
-    """构建 Assistant 及其依赖（emotion / autonomy / tts），与 GUI 启动同构。
-
-    persona: 可选角色设定文本，注入该系统提示前缀，用于村民职业人格。
-    """
+def build_assistant():
+    """构建 Assistant 及其依赖（emotion / autonomy / tts），与 GUI 启动同构。"""
     autonomy = None
     try:
         from autonomy import Autonomy
@@ -85,13 +74,6 @@ def build_assistant(persona: str = None):
 
     from assistant import Assistant
     assistant = Assistant(autonomy=autonomy, emotion=emotion)
-
-    # 注入村民职业人格（不影响通用大脑链路）
-    if persona:
-        try:
-            assistant.set_persona(persona)
-        except Exception:
-            pass
 
     # 语音输出端（仅合成+交字节，不在本机播放）
     from voice import TTS
@@ -211,23 +193,14 @@ def compute_action_params(brain):
 # 事件桥
 # --------------------------------------------------------------------------- #
 class NPCBrain:
-    """单个 NPC 的全部「大脑 + 世界 + 探索 + 任务」组分，彼此独立（隔离哲学见 multiplayer_memory）。"""
+    """单个 NPC 的全部「大脑」组分，彼此独立（多 NPC 时互不串台）。"""
     def __init__(self, npc_id, name, assistant, emotion, tts, broadcast):
         self.npc_id = npc_id
         self.name = name
         self.assistant = assistant
         self.emotion = emotion
         self.tts = tts
-        # —— 3D 世界感知 + 主动探索（每个 NPC 一份）——
-        self.world_state = SymbolicWorldState()
-        # explorer 的 emit 自动带 npc_id 再广播，Unity 才能路由到对应 Agent
-        self.explorer = AutonomousExplorer(
-            self.world_state, assistant,
-            lambda m: broadcast(dict(m, npc_id=npc_id)),
-        )
-        # 任务系统
-        from quest import QuestManager
-        self.quests = QuestManager(npc_id, lambda m: broadcast(dict(m, npc_id=npc_id)))
+        self.broadcast = broadcast
 
 
 class GameBridge:
@@ -240,30 +213,18 @@ class GameBridge:
         self.npcs = {}                  # npc_id -> NPCBrain
         # —— 动作教学间：等待 Unity 回执的录制配对（教学句 → 动作clip）——
         self._pending_capture = None    # {trigger_text, meta, ts}
-        # —— 小镇（我的世界村庄式自给自足小镇）：全局唯一，所有 NPC 共享 ——
-        self.town = TownSim(self._broadcast)
-        # 注意：不再额外 spawn 一个 "default" NPC——小念已由 villagers 的
-        # "xiaonian" 预设提供，避免与场景里的 NPC_xiaonian 重复出两个小念。
-        # 自动按预设 spawn 村民（已限制为 3 个：小念 + kai + roe），构成多人小镇
-        if CONFIG.get("town_auto_spawn", True):
-            for p in default_spawns():
-                self.spawn_npc(p["npc_id"], p["name"], role=p["role"],
-                               persona=p.get("persona"))
+        # 默认 NPC：Unity 连上即可对话（未显式 spawn 时用它兜底）
+        if auto_default:
+            self.spawn_npc("xiaonian", CONFIG.get("name", "小念"))
 
     # ----- NPC 生命周期 -----
-    def spawn_npc(self, npc_id, name=None, role=None, persona=None):
+    def spawn_npc(self, npc_id, name=None):
         with self._lock:
             if npc_id in self.npcs:
                 return self.npcs[npc_id]
-            assistant, emotion, tts = build_assistant(persona=persona)
+            assistant, emotion, tts = build_assistant()
             brain = NPCBrain(npc_id, name or npc_id, assistant, emotion, tts,
                              self._broadcast)
-            # 让该 NPC 对话时也能“感知”3D 世界符号环境
-            try:
-                assistant.set_world_context_provider(
-                    lambda: brain.world_state.snapshot_text())
-            except Exception:
-                pass
             # 把动作意图码注册进意识层，供自发动作选择使用
             if assistant.mind is not None:
                 try:
@@ -272,19 +233,11 @@ class GameBridge:
                 except Exception as _e:
                     print(f"[桥] {npc_id} 动作概念注册失败：{_e}")
             self.npcs[npc_id] = brain
-            # 注册进小镇（按职业参与生产/需求网络）
-            if role:
-                self.town.register_villager(npc_id, role)
             return brain
 
     def despawn_npc(self, npc_id):
         with self._lock:
             brain = self.npcs.pop(npc_id, None)
-        if brain is not None:
-            try:
-                brain.explorer.stop()
-            except Exception:
-                pass
         return brain is not None
 
     # ----- 事件发送：线程安全的“推到主事件循环再 send” -----
@@ -414,12 +367,6 @@ class GameBridge:
             except Exception:
                 pass
 
-        # 任务：对话可能触发接任务（规则判定，不依赖 LLM 回复，先判避免被 chat 阻塞）
-        try:
-            brain.quests.maybe_offer_from_dialogue(text)
-        except Exception:
-            pass
-
         import time as _time
         t0 = _time.time()
         print(f"[桥] [{npc_id}] 收到输入，开始生成…", flush=True)
@@ -519,84 +466,6 @@ class GameBridge:
             print(f"[桥] [{npc_id}] 无 TTS，已推文字/动作，token 共 {token_count[0]} 个",
                   flush=True)
 
-    # ----- 低频视觉快照：结合符号感知做「符号+像素」联合推理 -----
-    def _handle_visual_snapshot(self, msg, npc_id="default"):
-        """收到 Unity 推来的 1080p 视觉快照(base64)，做视觉推理并融合符号感知。
-
-        - 把 base64 解码成图片，按 world_vision_max_width 压缩（降 token/延迟）；
-        - 视觉 prompt 里注入「当前已加载范围内的符号感知文本」，实现“结合符号感知推理”；
-        - 推理结果回填 world_state.on_vision（供意识层联想 + 下一次 prompt 注入）；
-        - 整个过程不参与、也不阻塞玩家对话。
-        """
-        brain = self.npcs.get(npc_id) or self.spawn_npc(npc_id)
-        world_state = brain.world_state
-        if not CONFIG.get("world_vision_enabled", True):
-            return
-        try:
-            import vision
-            if not vision.is_available():
-                return
-        except Exception:
-            return
-
-        b64 = msg.get("image_b64") or msg.get("image")
-        if not b64:
-            return
-        try:
-            raw = base64.b64decode(b64)
-        except Exception:
-            return
-
-        # 写临时图片（数据目录），必要时压缩
-        from PIL import Image
-        import io
-        d = os.path.join(CONFIG.get("data_dir", "."), "world_watch")
-        os.makedirs(d, exist_ok=True)
-        tmp = os.path.join(d, f"snap_{int(time.time()*1000)}.jpg")
-        try:
-            img = Image.open(io.BytesIO(raw)).convert("RGB")
-            max_w = int(CONFIG.get("world_vision_max_width", 1280))
-            w, h = img.size
-            if w > max_w:
-                img = img.resize((max_w, int(h * max_w / w)))
-            img.save(tmp, "JPEG", quality=82)
-        except Exception:
-            # 解码/压缩失败就直接用原始字节落盘
-            try:
-                with open(tmp, "wb") as f:
-                    f.write(raw)
-            except Exception:
-                return
-
-        # 注入符号感知文本：让视觉推理“结合符号”而不是盲看
-        symbolic = world_state.snapshot_text()
-        question = (
-            "这是小念在 3D 世界里的视角画面。请结合她当前已感知到的符号信息：\n"
-            f"{symbolic}\n"
-            "描述画面中实际看到的物体、环境样貌，以及是否有值得注意的细节"
-            "（颜色/材质/是否发光/是否有文字/是否有人物）。只描述你真实看到的，"
-            "不要编造，不超过 80 字。"
-        )
-        try:
-            desc = vision.look(question, image_path=tmp, max_tokens=200)
-        except Exception:
-            desc = None
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-        if desc:
-            world_state.on_vision(desc)
-            # 视觉洞察也回写意识层（与符号感知一起长进联想图）
-            # 注意：learn 需要 think 产生的 ConsciousState，必须先 think 再 learn
-            mind = getattr(brain.assistant, "mind", None)
-            if mind is not None:
-                try:
-                    st = mind.think(desc)
-                    mind.learn_async(desc, "", st)
-                except Exception:
-                    pass
-
     # ----- WebSocket 连接处理 -----
     async def _on_connect(self, ws):
         # 缓存当前运行中的事件循环，供 _push 在 executor 线程里安全调度
@@ -621,11 +490,6 @@ class GameBridge:
         with self._lock:
             default_npc_id = next(iter(self.npcs.keys()), "default")
         rest_task = asyncio.ensure_future(self._restlessness_heartbeat(ws, default_npc_id))
-        # 连接即下发当前小镇状态（村庄面板/建筑/村民），Unity 据此渲染村庄
-        try:
-            self.town._broadcast_state()
-        except Exception:
-            pass
         try:
             async for raw in ws:
                 try:
@@ -644,30 +508,6 @@ class GameBridge:
                     )
                 elif mtype == "ping":
                     self._push(ws, {"type": "pong"})
-                # ---- 3D 世界感知事件（来自 Unity 符号感知脚本）----
-                elif mtype == "world_load":
-                    # 区域(预加载)加载/卸载：{region_id, loaded}
-                    brain = self.npcs.get(npc_id) or self.spawn_npc(npc_id)
-                    brain.world_state.on_region(
-                        msg.get("region_id", ""), bool(msg.get("loaded", False))
-                    )
-                elif mtype == "symbolic_percept":
-                    # 符号感知批量更新：{agent_pos, objects:[...]}（无图像）
-                    brain = self.npcs.get(npc_id) or self.spawn_npc(npc_id)
-                    brain.world_state.on_percept(msg)
-                    # 探索发现 type=='quest' 物体时触发对应任务
-                    for o in msg.get("objects", []) or []:
-                        try:
-                            brain.quests.maybe_offer_from_explore(o)
-                        except Exception:
-                            pass
-                elif mtype == "visual_snapshot":
-                    # 低频 1080p 视觉快照：{cam_pos, image_b64}（base64 jpg/png）
-                    # 视觉推理较重，放 executor 线程，避免阻塞事件循环
-                    loop = asyncio.get_event_loop()
-                    loop.run_in_executor(
-                        None, self._handle_visual_snapshot, msg, npc_id
-                    )
                 # ---- NPC 生命周期（多 NPC 支持）----
                 elif mtype == "spawn_npc":
                     nid = msg.get("npc_id") or msg.get("id")
@@ -682,28 +522,6 @@ class GameBridge:
                         ok = self.despawn_npc(nid)
                         self._push(ws, {"type": "npc_despawned", "npc_id": nid,
                                         "ok": ok})
-                # ---- 任务进度事件（来自 Unity）----
-                elif mtype == "quest_event":
-                    brain = self.npcs.get(npc_id) or self.spawn_npc(npc_id)
-                    brain.quests.on_event(
-                        msg.get("kind", "custom"),
-                        object_id=msg.get("object_id"),
-                        npc_id_from=msg.get("npc_id_from"),
-                    )
-                # ---- 小镇：玩家/村民上缴资源（自给自足建设）----
-                elif mtype == "town_contribute":
-                    self.town.contribute(
-                        msg.get("npc_id") or npc_id,
-                        msg.get("resource", ""),
-                        float(msg.get("amount", 0) or 0),
-                    )
-                # ---- 小镇：村民到达/交互建筑，完成一轮生产 ----
-                elif mtype == "town_event":
-                    self.town.on_villager_event(
-                        msg.get("npc_id") or npc_id,
-                        msg.get("kind", "interact"),
-                        msg.get("object_id"),
-                    )
                 # ---- 动作教学间：Unity 录制回执（与教学句配对入库）----
                 elif mtype == "capture_result":
                     self._handle_capture_result(msg)
@@ -732,12 +550,7 @@ class GameBridge:
                     # {"stimuli":["玩家接近","社交","晚上","椅子"], "weight":0.9}
                     brain = self.npcs.get(npc_id) or self.spawn_npc(npc_id)
                     stimuli = [s for s in (msg.get("stimuli", []) or []) if s]
-                    weight = float(msg.get("weight", 0.5) or 0.5)
-                    try:
-                        brain.world_state.on_stimuli(stimuli, weight)
-                    except Exception:
-                        pass
-                    # 同时灌进意识层作为概念种子，让环境与动作建立联想
+                    # 灌进意识层作为概念种子，让环境与动作建立联想
                     if stimuli and brain.assistant.mind is not None:
                         try:
                             text = " ".join(stimuli)
@@ -754,19 +567,8 @@ class GameBridge:
                                         "action": "[ACT_IDLE]", "prob": 0.0})
                     else:
                         ctx = [c for c in (msg.get("context", []) or []) if c]
-                        # 也把世界状态里的近处物体名加进上下文，增加 grounded
-                        try:
-                            snapshot = brain.world_state.snapshot_text()
-                        except Exception:
-                            snapshot = ""
-                        # 从 snapshot 提取物体名作为辅助种子（简单分词）
-                        extra = []
-                        if snapshot:
-                            import re
-                            extra = re.findall(r"- ([^（]+)（", snapshot)
-                        seeds = ctx + extra[:5]
                         action, prob = brain.assistant.mind.spontaneous_action(
-                            seeds, action_prefix="[ACT_"
+                            ctx, action_prefix="[ACT_"
                         )
                         threshold = float(msg.get("threshold", 0.15) or 0.15)
                         if action is None or prob < threshold:
@@ -776,7 +578,7 @@ class GameBridge:
                         _ap = compute_action_params(brain)
                         self._push(ws, {"type": "action_intent", "npc_id": npc_id,
                                         "action": action, "prob": round(prob, 3),
-                                        "context": seeds,
+                                        "context": ctx,
                                         "duration": round(min(max(2.5, prob * 6.0), 5.0), 2),
                                         "speed": _ap["speed"], "amplitude": _ap["amplitude"],
                                         "lean": _ap["lean"], "trait": _ap["trait"]})
@@ -901,15 +703,6 @@ class GameBridge:
         print("[桥] 等待 3D 游戏端连接……（Ctrl+C 退出）")
         # 控制台测试命令（动作库闭环：/actions /capture /play）
         threading.Thread(target=self._console_loop, daemon=True).start()
-        # 启动所有 NPC 的主动探索引擎（后台线程，非被动等待玩家）
-        if CONFIG.get("world_autonomy_enabled", True):
-            for nid, brain in self.npcs.items():
-                brain.explorer.start()
-            print(f"[桥] 主动探索引擎已启动（{len(self.npcs)} 个 NPC，符号感知 + 意识层驱动）")
-
-        # 启动小镇经济模拟（自给自足 tick）
-        self.town.start()
-        print(f"[桥] 小镇经济模拟已启动（{len(self.town.villagers)} 位村民，目标：自给自足）")
 
         # 端口绑定：默认端口被占用时自动顺延，避免直接崩溃退出。
         host, port = self.host, self.port
@@ -941,12 +734,6 @@ class GameBridge:
             asyncio.run(_serve_forever())
         except KeyboardInterrupt:
             print("\n[桥] 已停止。")
-        finally:
-            for brain in self.npcs.values():
-                try:
-                    brain.explorer.stop()
-                except Exception:
-                    pass
 
 
 # --------------------------------------------------------------------------- #

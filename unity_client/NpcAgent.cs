@@ -27,9 +27,6 @@ public class NpcAgent : MonoBehaviour
     private AudioSource _audio;
     private float _bubbleTimer;
 
-    // 小镇采集任务：当前要去的目标建筑位置（世界坐标），到达即上报生产完成
-    private Vector3? _townTaskTarget;
-    private string _townTaskObjId;
 
 #if UNITY_VRM
     private BlendShapeProxy _bsProxy;
@@ -79,8 +76,6 @@ public class NpcAgent : MonoBehaviour
             case "talk_stop":    StopSpeech(); break;
             case "agent_command": ApplyAgentCommand(ev); break;
             case "agent_thought": Debug.Log($"[{displayName}] 想法: {(string)ev["thought"]}"); break;
-            case "quest_update":  QuestSystem.Instance?.OnQuestUpdate(npcId, ev); break;
-            case "town_task":     OnTownTask(ev); break;   // 小镇采集任务
             default: Debug.Log($"[{displayName}] 未处理事件: {type}"); break;
         }
     }
@@ -111,19 +106,6 @@ public class NpcAgent : MonoBehaviour
                 bubbleText.transform.parent?.gameObject.SetActive(false);
         }
 
-        // 小镇任务：到达目标建筑 → 上报完成一轮生产
-        if (_townTaskTarget != null)
-        {
-            float d = Vector3.Distance(transform.position, _townTaskTarget.Value);
-            if (d < 1.5f)
-            {
-                TownView town = FindObjectOfType<TownView>();
-                town?.ReportTownEvent(npcId, _townTaskObjId);
-                Debug.Log($"[{displayName}] 到达 {_townTaskObjId}，上报生产完成");
-                _townTaskTarget = null;
-                _townTaskObjId = null;
-            }
-        }
     }
 
     // ---------------- 表情（面部 BlendShape）----------------
@@ -165,7 +147,7 @@ public class NpcAgent : MonoBehaviour
         catch (Exception ex) { Debug.LogError($"[{displayName}] 音频解码失败: {ex.Message}"); }
     }
 
-    // ---------------- 主动探索命令（来自 explorer）----------------
+    // ---------------- 主动探索命令 ----------------
     private void ApplyAgentCommand(JObject ev)
     {
         if (_ctrl == null) return;
@@ -176,25 +158,6 @@ public class NpcAgent : MonoBehaviour
             : (Vector3?)null;
         string objId = (string)ev["target"];
         _ctrl.HandleCommand(action, target, objId);
-    }
-
-    // ---------------- 小镇采集任务 ----------------
-    private void OnTownTask(JObject ev)
-    {
-        string target = (string)ev["objective"]?["target"];
-        if (string.IsNullOrEmpty(target)) return;
-        // 在小镇建筑坐标表里找目标位置（与 Python src/town.py BUILDINGS 对齐）
-        Vector3? pos = TownLayout.PosOf(target);
-        if (pos == null)
-        {
-            Debug.LogWarning($"[{displayName}] 未知建筑目标: {target}");
-            return;
-        }
-        _townTaskObjId = target;
-        _townTaskTarget = pos;
-        if (_ctrl != null)
-            _ctrl.HandleCommand("move", pos, target);
-        Debug.Log($"[{displayName}] 接到小镇任务，前往: {target} @ {pos}");
     }
 
     // ---------------- 上行：玩家输入 ----------------

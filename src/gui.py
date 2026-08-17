@@ -209,15 +209,6 @@ class App:
         # 让“打开软件”等动作在主线程（UI 线程）执行
         launcher.bind_main_thread(lambda fn: self.root.after(0, fn))
 
-        # 启动 IM 接入（QQ/微信）
-        if self.assistant is not None:
-            try:
-                from bot import Bot
-                self.bot = Bot(self.assistant).setup()
-                self.bot.start()
-            except Exception as e:
-                self.append("系统", f"IM 接入未启动（不影响本地聊天）：{e}")
-
         # 启动小念的 Live2D 桌面形象窗口（独立进程，透明桌宠）
         if CONFIG.get("live2d_enabled"):
             self._start_live2d()

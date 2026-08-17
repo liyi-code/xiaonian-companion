@@ -2,9 +2,9 @@
  * SymbolicPerception —— 小念在 3D 世界里的「符号感知」采集器（无图像）。
  *
  * 多 NPC 版本：每个 NPC 实例（挂了 NpcAgent 的 VRM）上挂一个本脚本，感知数据按
- * 该 NPC 的 npcId 推给 Python（每个 NPC 有独立的 world_state，互不串台）。
+ * 该 NPC 的 npcId 推给 Python（每个 NPC 有独立的大脑与记忆，互不串台）。
  *
- * 它做三件事，全部通过 BridgeHub 推给 Python 端（src/bridge.py + world_state.py）：
+ * 它做三件事，全部通过 BridgeHub 推给 Python 端（src/bridge.py）：
  *   1) 区域(预加载)上报：当前场景名作为 region，加载时 world_load(loaded=true)。
  *   2) 符号感知：每 perceptInterval 秒，遍历自身 radius 米内的可感知物体（挂了
  *      PerceptTag 的物体），组装成 symbolic_percept 推给小念。

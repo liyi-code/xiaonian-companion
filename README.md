@@ -51,7 +51,6 @@
 - **数据 + 截屏联合理**：程序级（窗口/进程）+ 像素级（视觉模型）双通道感知
 - **网络搜索 + 自主学习**：遇到不会的事自动上网搜索，用搜索到的知识指导下一步
 - **帮你操作电脑**：开软件、搜文件、建计划/笔记
-- **可接入 QQ / 微信**：让她用自己账号陪你聊
 - **可选语音**：本地 GPT-SoVITS 克隆音色（默认关）
 
 > 📊 完整性能数据见 [docs/评测报告.md](docs/评测报告.md) — 任务完成率 87.5%、记忆准确率 100%、角色一致性 100%、模块原创度 85%+
@@ -95,7 +94,7 @@
 | `SCREEN_WATCH_ENABLED` / `VISION_ENABLED` | 屏幕陪伴 / 多模态视觉 |
 | `AUTONOMY_ENABLED` / `FILE_OPS_ENABLED` | 受约束自主权限 / 帮你建文件 |
 
-完整选项与跨电脑部署、语音、QQ/微信接入见 **`SETUP.md`**。
+完整选项与跨电脑部署、语音见 **`SETUP.md`**。
 
 ---
 
@@ -203,13 +202,10 @@
 xiaonian-companion/
 ├─ src/                # 源码（assistant / bridge / emotion / memory / clayer 意识层 / tools …）
 │  ├─ clayer/         # 意识层（联想/注意力/遗忘/价值导向）
-│  ├─ villagers.py    # NPC 引擎：预加载、预热
-│  ├─ town.py / quest.py  # 小镇世界状态 + 任务系统
-│  └─ explorer.py     # 自主探索与自发行为
+│  └─ action_library.py / osc_bridge.py  # 动作教学间（动作库 + VRChat OSC 桥）
 ├─ unity_project/     # Unity 工程（VRM 角色 + 程序化动画）
 ├─ assets/live2d/     # Live2D 模型（hiyori_pro，可商用）
-├─ onebot/            # QQ 接入示例
-├─ docs/              # 额外文档（评测报告 / 架构）
+├─ docs/              # 额外文档（VRChat / 化身 / 架构）
 ├─ .env.example       # 配置模板
 ├─ 启动.bat           # 一键启动
 ├─ SETUP.md           # 详细部署指南

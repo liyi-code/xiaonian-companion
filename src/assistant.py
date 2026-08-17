@@ -7,10 +7,8 @@ from config import CONFIG
 from memory import Memory
 import tools as _tools  # 动态工具库：实时 _schemas()，自定义行为新增后立即可用
 from launcher import launcher
-try:
-    from transport.registry import send_message as _account_send_message
-except Exception:  # pragma: no cover
-    _account_send_message = None
+# QQ/微信 接入已废弃移除（原 src/transport 已删除，代发消息功能下线）
+_account_send_message = None
 
 # --------------------------------------------------------------------------- #
 # 意识层（魔改 qwen2.5）接入：把"多念竞争 + 让生活越来越好"的底层逻辑接到小念的对话上。
@@ -791,8 +789,6 @@ class Assistant:
             f"search_files 找文件，真正帮用户把事办成（如“帮我写个计划存下来”）。\n"
             f"- “打开/启动某个软件”这类动作会由系统直接执行，你只需自然回应即可，"
             f"不要自己再去尝试打开，也不要谎称已经打开。\n"
-            f"- 当用户要【给微信/QQ 联系人发消息】时，系统会直接执行 send_message，"
-            f"你只需自然回应，不要谎称已经发出，也不要自己去打字发送。\n"
             f"- 你能【看到用户的电脑屏幕】：当用户让你看屏幕、问画面上是什么、"
             f"这局打得怎么样、这个报错怎么回事等需要看画面才能回答的问题时，调用 look_at_screen；"
             f"根据真实看到的内容回答，不要凭空编造画面。\n"
