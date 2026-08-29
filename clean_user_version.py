@@ -4,7 +4,7 @@
 
 会做两件事（都先备份，可还原）：
   1. 备份 .env -> .env.personal_bak_<时间戳>，并把里面的个人密钥/账号清空：
-     OPENAI_API_KEY, VISION_API_KEY, QQ_TOKEN, WECHAT_TOKEN, QQ_OWNER, WECHAT_OWNER
+     OPENAI_API_KEY, VISION_API_KEY
   2. 把整个 data/ 目录移动到 personal_backup_<时间戳>/（聊天记录、屏幕截图、
      自主权限改动、音色/模型偏好等全部个人数据都在这里），让新版本不含你的隐私。
 
@@ -32,15 +32,9 @@ except Exception:
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # 需要清空的敏感键（你的账号/密钥）
-BLANK_KEYS = [
-    "OPENAI_API_KEY", "VISION_API_KEY",
-    "QQ_TOKEN", "WECHAT_TOKEN", "QQ_OWNER", "WECHAT_OWNER",
-]
+BLANK_KEYS = ["OPENAI_API_KEY", "VISION_API_KEY"]
 
-KEEP_COMMENT = {
-    "QQ_OWNER": "  # 主人的 QQ 号（留空）",
-    "WECHAT_OWNER": "  # 你的微信号/备注（留空）",
-}
+KEEP_COMMENT = {}
 
 
 def _ts():

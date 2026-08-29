@@ -209,15 +209,6 @@ class App:
         # 让“打开软件”等动作在主线程（UI 线程）执行
         launcher.bind_main_thread(lambda fn: self.root.after(0, fn))
 
-        # 启动 IM 接入（QQ/微信）
-        if self.assistant is not None:
-            try:
-                from bot import Bot
-                self.bot = Bot(self.assistant).setup()
-                self.bot.start()
-            except Exception as e:
-                self.append("系统", f"IM 接入未启动（不影响本地聊天）：{e}")
-
         # 启动小念的 Live2D 桌面形象窗口（独立进程，透明桌宠）
         if CONFIG.get("live2d_enabled"):
             self._start_live2d()
@@ -474,6 +465,7 @@ class App:
             "volume": float(CONFIG["sovits_volume"]),
             "input_device": "",   # 麦克风设备：""=系统默认(优先花再)；或索引/名子串
             "output_device": "",  # 扬声器设备：""=系统默认；或索引/名子串
+            "voice_confirm_send": CONFIG.get("voice_confirm_send", True),  # 语音识别后是否先确认再发送
         }
         try:
             with open(self.style_path, encoding="utf-8") as f:
@@ -1109,6 +1101,14 @@ class App:
         in_menu.config(width=24)
         in_menu.pack(padx=10, fill=tk.X)
 
+        # 语音识别确认开关：勾选=识别结果先填进输入框由用户确认；不勾=说完直接发送
+        confirm_var = tk.BooleanVar(value=bool(self.style.get("voice_confirm_send", True)))
+        tk.Checkbutton(
+            body, variable=confirm_var,
+            text="语音识别后先确认再发送（不勾 = 说完直接发送，无需确认）",
+            command=lambda: self._set_voice_confirm(confirm_var.get()),
+        ).pack(anchor="w", padx=12, pady=(4, 0))
+
         tk.Label(body, text="扬声器（语音输出）").pack(anchor="w", padx=12, pady=(6, 0))
         out_var = tk.StringVar(value=self._device_label(self.style.get("output_device", ""), outs))
         out_menu = tk.OptionMenu(
@@ -1169,6 +1169,14 @@ class App:
             setattr(self, "settings_win", None)
         win.protocol("WM_DELETE_WINDOW", _on_close)
 
+    def _set_voice_confirm(self, v):
+        """语音识别确认开关：勾=先确认再发送；不勾=说完直接发送。持久化到 style。"""
+        self.style["voice_confirm_send"] = bool(v)
+        self.save_style()
+        self.show_voice_status(("语音识别：先确认再发送（识别结果填入输入框）"
+                                if self.style["voice_confirm_send"]
+                                else "语音识别：说完直接发送（无需确认）"), 4000)
+
     def _set_alpha(self, v):
         self.style["alpha"] = v
         try:
@@ -1181,6 +1189,7 @@ class App:
         self.style["volume"] = v
         if getattr(self, "tts", None) is not None:
             self.tts.volume = v
+            self.tts.base_volume = v   # 情绪语音风格以此为基准乘倍率
         self.save_style()
 
     def _set_denoise(self, v):
@@ -1377,9 +1386,23 @@ class App:
         # on_level：播放期间每帧把当前音频能量传过去，驱动嘴型实时张合（长句也同步）
         def on_level(rms):
             self._send_mouth(rms)
+        # 情绪 → 语音：语速/音量随当下心情实时变化（用户基准 × 情绪倍率，不覆盖设置）
+        emo = getattr(self, "emotion", None)
+        if emo is not None:
+            try:
+                vs = emo.voice_style()
+                self.tts.speed = self.tts.base_speed * vs["speed"]
+                self.tts.volume = self.tts.base_volume * vs["volume"]
+            except Exception:
+                pass
+        # 合成失败即时提示（后台线程回调，切回主线程显示；不用等队列播完）
+        def on_error(msg):
+            self.root.after(0, lambda: self.show_voice_status("🔊 " + msg, 6000))
+
         # 串行锁：保证所有语音输出（用户回复 / 看屏 / 关心）互不重叠、口型对齐
         with self._speak_lock:
-            err = self.tts.speak(text, on_play=on_play, on_level=on_level)
+            err = self.tts.speak(text, on_play=on_play, on_level=on_level,
+                                 on_error=on_error)
             # 无论成功或失败，播放结束后都归位（口型归零、淡出气泡），避免卡在“张嘴”状态
             self._stop_talk()
         if err:
@@ -1434,7 +1457,7 @@ class App:
     def _send_voice_text(self, text):
         self.entry.delete(0, tk.END)
         self.entry.insert(0, text)
-        if CONFIG.get("voice_confirm_send", True):
+        if self.style.get("voice_confirm_send", CONFIG.get("voice_confirm_send", True)):
             # 回显确认模式：识别结果先填入输入框，按回车才发送，
             # 让用户有机会改掉听错的字，直接治“已读乱回”。
             self.entry.icursor(tk.END)

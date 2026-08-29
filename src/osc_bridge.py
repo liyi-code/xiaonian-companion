@@ -594,6 +594,15 @@ class OscBridge:
         def _finish():
             self.her.set_viseme(0)
 
+        # 情绪 → 语音：语速/音量随当下心情实时变化（用户基准 × 情绪倍率）
+        try:
+            if self.emotion is not None:
+                vs = self.emotion.voice_style()
+                self.tts.speed = self.tts.base_speed * vs["speed"]
+                self.tts.volume = self.tts.base_volume * vs["volume"]
+        except Exception:
+            pass
+
         try:
             err = self.tts.speak(reply, on_play=on_play, on_level=on_level)
             if err:

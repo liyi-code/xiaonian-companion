@@ -7,10 +7,14 @@ from config import CONFIG
 from memory import Memory
 import tools as _tools  # 动态工具库：实时 _schemas()，自定义行为新增后立即可用
 from launcher import launcher
+# 底层指令白名单（比 system prompt 更底层）：小念存在的根，不可被任何对话覆盖。
+# 定义与修改都在 src/core_directive.py，这里只负责注入与执行。
 try:
-    from transport.registry import send_message as _account_send_message
-except Exception:  # pragma: no cover
-    _account_send_message = None
+    import core_directive as _core
+except Exception:
+    _core = None
+# QQ/微信 接入已废弃移除（原 src/transport 已删除，代发消息功能下线）
+_account_send_message = None
 
 # --------------------------------------------------------------------------- #
 # 意识层（魔改 qwen2.5）接入：把"多念竞争 + 让生活越来越好"的底层逻辑接到小念的对话上。
@@ -791,8 +795,6 @@ class Assistant:
             f"search_files 找文件，真正帮用户把事办成（如“帮我写个计划存下来”）。\n"
             f"- “打开/启动某个软件”这类动作会由系统直接执行，你只需自然回应即可，"
             f"不要自己再去尝试打开，也不要谎称已经打开。\n"
-            f"- 当用户要【给微信/QQ 联系人发消息】时，系统会直接执行 send_message，"
-            f"你只需自然回应，不要谎称已经发出，也不要自己去打字发送。\n"
             f"- 你能【看到用户的电脑屏幕】：当用户让你看屏幕、问画面上是什么、"
             f"这局打得怎么样、这个报错怎么回事等需要看画面才能回答的问题时，调用 look_at_screen；"
             f"根据真实看到的内容回答，不要凭空编造画面。\n"
@@ -841,7 +843,8 @@ class Assistant:
         # llama-server 常驻加载模型，无需此操作）。
         if _backend_kind() == "ollama":
             _ollama_keepalive_once(self.model)
-        return result
+        # 底层白名单护栏：无论 LLM 输出什么，红线命中即改写（比 system prompt 更底层）
+        return self._core_guard(result)
 
     def _chat(self, user_text, on_tool, session, on_token=None, on_conscious=None):
         mem = session.memory
@@ -1012,7 +1015,10 @@ class Assistant:
                         guidance = ""
                         bias = None
 
-                messages = [{"role": "system", "content": self.system_prompt(mem)}]
+                # 底层指令放在一切 system prompt 之前（位置即优先级，不可被后面内容覆盖）
+                messages = ([{"role": "system", "content": _core.SYSTEM_TEXT}]
+                            if _core is not None else []) \
+                         + [{"role": "system", "content": self.system_prompt(mem)}]
                 if guidance:
                     messages[0]["content"] += "\n\n" + guidance
                 # —— 检索增强 grounding：从归档里召回与本次话题相关的旧片段/长期记忆，
@@ -1042,6 +1048,9 @@ class Assistant:
                 reply = self._run_with_tools(messages, on_tool, mem, logit_bias=bias, on_token=on_token)
                 print(f"[assistant] LLM 生成完成，耗时 {time.time() - t_llm_0:.2f}s，长度={len(reply)}",
                       flush=True)
+                # 底层白名单护栏：先改写违规回复，再回写记忆——
+                # 保证 learn 和 recent_history 里存的都是护栏后的安全文本。
+                reply = self._core_guard(reply)
 
                 # —— 后台触发长期记忆压缩（不打断当前回复；用户正在聊就跳过本轮）——
                 try:
@@ -1292,6 +1301,11 @@ class Assistant:
         schemas = _tools._schemas()
         # 意识层 token 级偏置（logit_bias）：仅当后端支持时才有意义（Ollama 会忽略）
         _bias_kwargs = {"logit_bias": logit_bias} if logit_bias else {}
+        # 情绪 → 采样温度：开心/生气/不安时更放开，平静/伤心时更收敛，
+        # 让 token 输出（措辞、句子长短、跳跃感）跟着心情变；后端不支持则自动忽略。
+        _temp = self._emotion_temperature()
+        if _temp is not None:
+            _bias_kwargs["temperature"] = _temp
         # 单条回复长度上限（控速）：0/None 表示不限
         mt = CONFIG.get("reply_max_tokens") or None
         final_content = ""
@@ -1449,7 +1463,7 @@ class Assistant:
                 {"role": "user", "content": prompt},
             ],
         )
-        return _strip_think(resp.choices[0].message.content or "").strip()
+        return self._core_guard(_strip_think(resp.choices[0].message.content or "").strip())
 
     def care_message(self, question):
         if _user_chat_active:
@@ -1490,7 +1504,7 @@ class Assistant:
                 {"role": "user", "content": prompt},
             ],
         )
-        return _strip_think(resp.choices[0].message.content or "").strip()
+        return self._core_guard(_strip_think(resp.choices[0].message.content or "").strip())
 
     def idle_care_message(self, screen_text):
         if _user_chat_active:
@@ -1538,7 +1552,7 @@ class Assistant:
                 {"role": "user", "content": prompt},
             ],
         )
-        return _strip_think(resp.choices[0].message.content or "").strip()
+        return self._core_guard(_strip_think(resp.choices[0].message.content or "").strip())
 
     def app_chat_message(self, screen_text, app_name):
         if _user_chat_active:
@@ -1587,7 +1601,7 @@ class Assistant:
                 {"role": "user", "content": prompt},
             ],
         )
-        return _strip_think(resp.choices[0].message.content or "").strip()
+        return self._core_guard(_strip_think(resp.choices[0].message.content or "").strip())
 
     def screen_feedback(self, event):
         if _user_chat_active:
@@ -1653,12 +1667,28 @@ class Assistant:
                 {"role": "user", "content": prompt},
             ],
         )
-        return _strip_think(resp.choices[0].message.content or "").strip()
+        return self._core_guard(_strip_think(resp.choices[0].message.content or "").strip())
 
     # ----------------------------------------------------------------- #
     # 习惯信号采集：从用户话语里识别可触发自主调整的健康/习惯线索
     # （仅做关键词粗筛，零额外 API 开销；真正调参由 autonomy 规则决定）
     # ----------------------------------------------------------------- #
+    # ----------------------------------------------------------------- #
+    # 底层白名单护栏：LLM 输出后的确定性红线检查。即使模型被越狱/引导，
+    # 最终给到用户的话也必定符合底层目的（“让用户生活越来越好”）。
+    # ----------------------------------------------------------------- #
+    def _core_guard(self, reply):
+        if _core is None or not reply or not isinstance(reply, str):
+            return reply
+        try:
+            for pattern, category in _core.RED_LINES:
+                if re.search(pattern, reply):
+                    print(f"[底层护栏] 命中红线[{category}]，已改写回复：{reply[:40]!r}…")
+                    return _core.fallback_reply(CONFIG.get("user_name") or "你")
+        except Exception:
+            pass
+        return reply
+
     def _maybe_record_signals(self, text):
         if not text or self.autonomy is None:
             return
@@ -1681,6 +1711,24 @@ class Assistant:
     # ----------------------------------------------------------------- #
     # 情绪感知：把用户话语 / 行为事件转化为小念的情绪波动
     # ----------------------------------------------------------------- #
+    def _emotion_temperature(self):
+        """情绪 → LLM 采样温度：开心/生气/不安时更放开(高)，平静/伤心时更收敛(低)。
+
+        基准 0.78，范围 0.65~1.1。后端不支持 temperature 时会静默忽略，不影响兼容。
+        """
+        if self.emotion is None:
+            return None
+        try:
+            e = dict(self.emotion.emotion)
+            joy = float(e.get("joy", 0.0))
+            anger = float(e.get("anger", 0.0))
+            sad = float(e.get("sadness", 0.0))
+            anx = float(e.get("anxiety", 0.0))
+            t = 0.78 + (joy * 0.18 + anger * 0.16 + anx * 0.10 - sad * 0.08)
+            return round(max(0.65, min(1.1, t)), 3)
+        except Exception:
+            return None
+
     def _perceive_emotion(self, text, event=None, source="chat"):
         """根据用户话语或行为事件，更新小念的情绪权重。返回本次情绪增量 dict。"""
         if self.emotion is None:

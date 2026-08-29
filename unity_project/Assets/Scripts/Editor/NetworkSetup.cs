@@ -71,11 +71,13 @@ public static class NetworkSetup
         cc.radius = 0.3f;
         cc.center = new Vector3(0f, 0.75f, 0f);
         cc.skinWidth = 0.06f;      // 薄皮肤：减少卡边角时的爆炸性推挤
-        cc.stepOffset = 0.3f;      // 台阶高度容差
+        cc.stepOffset = 0f;        // 取消“自动攀爬/自动上台阶”：只有按空格才离地
         cc.slopeLimit = 50f;
         source.AddComponent<NetworkPlayerSync>();
         source.AddComponent<PlayerChatController>();         // 本机聊天入口（找小念对话）
         source.AddComponent<ConceptStateMachine>();          // 玩家化身生命感：呼吸 + 待机转头 + 手臂自然垂放（告别十字站姿）
+        source.AddComponent<VrFullBodyTracking>();           // VR 全身捕捉（头+双手，髋/脚追踪器自动发现；桌面自动休眠）
+        source.AddComponent<VoiceCapture>();                 // 语音采集（按住 V / VR 扳机说话 → RPC 到主机）
 
         var camGo = new GameObject("PlayerCamera");
         camGo.transform.SetParent(source.transform, false);

@@ -314,7 +314,9 @@ public class NpcAgent : MonoBehaviour
                   ?? (cams.Length > 0 ? cams[0] : null);
         }
         if (cam == null) return;
-        Vector3 f = cam.transform.position - transform.position;
+        // UI 画布的可见面是 -Z（与 Sprite/Quad 一致）：必须让 +Z 背对相机、-Z 朝向相机，
+        // 文字才可读。若用 LookRotation(相机→物体) 让 +Z 朝相机，看到的正好是镜像面。
+        Vector3 f = transform.position - cam.transform.position;
         f.y = 0f;
         if (f.sqrMagnitude < 0.001f) return;
         Quaternion rot = Quaternion.LookRotation(f);

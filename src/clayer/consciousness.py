@@ -32,7 +32,7 @@ from _core import (
     ProbabilityEngine,
     normalized_entropy,
 )
-from affect import AffectState, Emotion
+from affect import AffectState, Emotion, _clamp01
 # 双通路睡眠引擎（依赖注入，弱引用避免循环导入）
 from sleep import DualPathwaySleep
 # 主动找话题引擎（从睡眠成果挑种子，纯规则不调 LLM）
@@ -68,6 +68,9 @@ class Thought:
     attention: float = 0.0            # 竞争胜出的注意力份额[0,1]，和为1 -> 资源分配
     vigor: float = 0.0                # 竞争力(决定注意力)
     is_primary: bool = False          # 是否主念(注意力最高)
+    # 动态自注意力：竞争力显式拆成两股力（供观察/调参）
+    bottom_up: float = 0.0            # 自底向上：刺激显著度（种子匹配+唤醒）
+    top_down: float = 0.0             # 自顶向下：价值/目标对齐（让生活越来越好）
 
     def line(self) -> str:
         return "、".join(f"{c}" for c, _ in self.concepts)
@@ -92,6 +95,10 @@ class ConsciousState:
     sleep_signal: str = ""        # "" | "sleepy_hint"(犯困) | "forced_sleep"(强制睡眠)
     sleep_state: str = "awake"    # "awake" | "sleepy" | "forced"
     traverse_ms: float = 0.0      # 本轮回合遍历记忆图的耗时(ms)
+    # ---------- 动态自注意力（精力有限 -> 注意力分配） ----------
+    attn_temp: float = config.ATTENTION_TEMP  # 本轮实际注意力温度(唤醒窄化/疲劳发散)
+    attn_fatigue: float = 0.0                 # 本轮结束后的注意力疲劳[0,1]
+    attn_load: float = 0.0                    # 本轮刺激负载[0,1]（候选念饱和强度均值）
     # ---------- 想象力出口（通路二合成概念回查） ----------
     imagined: List[Tuple[str, float]] = field(default_factory=list)  # [(组合key, 得分), ...]
 
@@ -118,7 +125,8 @@ class ConsciousState:
                 f"\n    选念=[{self.thought_line()}] 分布Top={parts} "
                 f"\n    多念={' | '.join(tl)} "
                 f"\n    -> LLM(temp={self.llm_temperature:.2f},top_p={self.llm_top_p:.2f},"
-                f"token偏置={self.bias_entries}条)")
+                f"token偏置={self.bias_entries}条)"
+                f"\n    动态注意(temp={self.attn_temp:.2f},疲劳={self.attn_fatigue:.2f},负载={self.attn_load:.2f})")
 
 
 class Consciousness:
@@ -136,6 +144,8 @@ class Consciousness:
         self.sleep_state: str = "awake"   # "awake" | "sleepy" | "forced"
         self.sleep_count: int = 0         # 累计进入强制睡眠(压缩整合)次数
         self.user_screening_needed: bool = False  # 压缩后仍超阈值 -> 需用户筛选存储
+        # 动态自注意力：记录上一轮 think 时间，用于疲劳的指数恢复
+        self._last_think_time: float = time.time()
         # 线程安全：think(读) / learn(写) / consolidate / save 共享 mem+graph，
         # 后台并行 learn 与 think 可能并发，加 RLock 保证互斥一致。
         self._lock = threading.RLock()
@@ -212,6 +222,17 @@ class Consciousness:
         # 5.7) 竞争：竞争力 vigor(强度+匹配+唤醒+价值) -> 注意力分配(softmax) -> 标记主念
         self._compete(candidates, seed_set)
         st.thoughts = candidates
+
+        # 5.75) 动态自注意力状态更新：刺激负载消耗精力，随时间恢复
+        now = time.time()
+        dt = max(0.0, now - self._last_think_time)
+        self._last_think_time = now
+        load = (sum(th.event_strength / (th.event_strength + config.EVENT_STRENGTH_REF)
+                    for th in candidates) / max(1, config.MAX_THOUGHTS)) if candidates else 0.0
+        st.attn_load = load
+        st.attn_fatigue = self.affect.tick_fatigue(dt, load)
+        st.attn_temp = self.affect.attention_temperature(
+            _clamp01(self.affect.arousal), st.attn_fatigue)
 
         # 5.8) 想象力出口：扩散激活思索不出候选念（表层卡壳）时，回查通路二合成概念索引
         if not candidates:
@@ -366,6 +387,11 @@ class Consciousness:
             if self.sleep_state in ("sleepy", "forced") and ms < config.SLEEP_RECOVER_MS:
                 self.sleep_state = "awake"
             st.sleep_signal = ""
+        # 动态自注意力：注意力疲劳同样触发"犯困"（与遍历耗时的睡眠机制并列）
+        if self.affect.attn_fatigue >= config.ATTN_FATIGUE_SLEEPY and st.sleep_signal == "":
+            st.sleep_signal = "sleepy_hint"
+            if self.sleep_state == "awake":
+                self.sleep_state = "sleepy"
 
     def force_sleep(self) -> dict:
         """用户手动强制睡眠：立即进入强制态并压缩整合记忆。返回报告。"""
@@ -549,10 +575,15 @@ class Consciousness:
     # ---------- 多念竞争（vigor -> 注意力） ----------
     def _compete(self, candidates: List[Thought], seed_set: set) -> None:
         """
-        每道念的竞争力 vigor = 事件强度(饱和 frac) + 与种子匹配度 + 情绪唤醒度 + 价值分。
-        注意力 = softmax(vigor / ATTENTION_TEMP)，和为1 -> 资源分配；最高者即主念。
-        价值分作为第四轴，使输出天然偏向"让使用者生活越来越好"的方向。
-        vigor 计算（含 match_degree 读图，C++ 释放 GIL）可并行；attention 依赖全体 vigor，串行。
+        动态自注意力（精力有限 -> 注意力必须分配）：
+          1) 每道念的竞争力 vigor = 强度 + 自底向上力 + 自顶向下力：
+             · 自底向上 = 刺激显著度（与当前种子匹配度 + 情绪唤醒）
+             · 自顶向下 = 价值对齐（让生活越来越好的程度）
+             两股力显式对抗，与人类注意力（刺激抓取 vs 目标引导）同构。
+          2) 注意力温度动态化：唤醒↑ -> 视野变窄(隧道效应，主念更响)；
+             疲劳↑ -> 想集中也集中不了(多念趋平)。
+          3) 预算下限：温度/预算紧张时，低于下限的弱念分不到精力 -> 注意力
+             归零再归一（被忽略的念彻底失声，注意力在"胜者"间再分配）。
         """
         if candidates:
             if self._cpp and len(candidates) > 1:
@@ -562,22 +593,35 @@ class Consciousness:
             else:
                 for th in candidates:
                     self._fill_vigor(th, seed_set)
-        atts = self.affect.allocate_attention([th.vigor for th in candidates])
+        # 动态注意力温度：唤醒窄化、疲劳发散（fatigue 为本轮开始前的状态）
+        temp = self.affect.attention_temperature(
+            _clamp01(self.affect.arousal), self.affect.attn_fatigue)
+        atts = self.affect.allocate_attention([th.vigor for th in candidates], temp=temp)
+        # 预算下限：疲劳越大越"没力气照顾弱念"，下限越高、被忽略的越多
+        floor = config.ATTN_FLOOR * (1.0 + self.affect.attn_fatigue)
+        atts = [a if a >= floor else 0.0 for a in atts]
+        z = sum(atts)
+        if z > 0.0:
+            atts = [a / z for a in atts]
         for th, a in zip(candidates, atts):
             th.attention = a
 
     def _fill_vigor(self, th: "Thought", seed_set: set) -> None:
-        """单道念的竞争力 vigor：与种子最佳匹配度 + 强度饱和 + 唤醒 + 价值。"""
+        """单道念的竞争力 vigor：强度 + 自底向上力 + 自顶向下力。"""
         best_match = 0.0
         for c, _ in th.concepts:
             m = self.graph.match_degree(c, seed_set)
             if m > best_match:
                 best_match = m
         frac = th.event_strength / (th.event_strength + config.EVENT_STRENGTH_REF)
-        th.vigor = (config.VIGOR_STRENGTH_W * frac
-                    + config.VIGOR_MATCH_W * best_match
-                    + config.VIGOR_AROUSAL_W * th.emotion.arousal
-                    + config.WELLBEING_W * th.wellbeing)
+        # 自底向上：刺激显著度（种子匹配 + 情绪唤醒）
+        th.bottom_up = config.ATTN_BOTTOMUP_W * (
+            config.VIGOR_MATCH_W * best_match
+            + config.VIGOR_AROUSAL_W * th.emotion.arousal
+        )
+        # 自顶向下：价值/目标对齐（让生活越来越好）
+        th.top_down = config.ATTN_TOPDOWN_W * (config.WELLBEING_W * th.wellbeing)
+        th.vigor = config.VIGOR_STRENGTH_W * frac + th.bottom_up + th.top_down
 
     def _fill_thought(self, th: "Thought", nent: float) -> None:
         """单道念的派生量：事件强度 + 情绪 + 价值分（只读，线程安全）。"""

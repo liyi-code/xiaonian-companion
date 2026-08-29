@@ -395,6 +395,8 @@ MonoBehaviour:
   lookSpeed: 3
   bodyBobScale: 0.05
   restArmAngle: 75
+  mirrorArmZ: 1
+  headLiftAngle: 8
   autoTestOnStart: 0
   autoTestDelay: 2
   actionSmooth: 12

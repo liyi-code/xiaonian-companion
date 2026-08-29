@@ -79,11 +79,14 @@ _HIGH_AROUSAL = {
 
 
 class AffectState:
-    """全局情绪基调 + 概念情绪关联（轻量）。"""
+    """全局情绪基调 + 概念情绪关联 + 注意力疲劳（轻量）。"""
 
     def __init__(self):
         self.valence = config.MOOD_VALENCE_INIT
         self.arousal = config.MOOD_AROUSAL_INIT
+        # 动态自注意力：注意力疲劳[0,1]。精力有限——每轮 think 消耗，随时间恢复；
+        # 高疲劳时注意力发散（想集中也集中不了），并触发"想睡"提示。
+        self.attn_fatigue = 0.0
 
     # ---------- 概念级情绪 ----------
     def concept_emotion(self, c: str) -> Emotion:
@@ -153,13 +156,41 @@ class AffectState:
         z = sum(ex) or 1.0
         return [e / z for e in ex]
 
+    # ---------- 动态自注意力（精力有限 -> 注意力必须分配） ----------
+    def attention_temperature(self, arousal: float, fatigue: float,
+                              base: float = config.ATTENTION_TEMP) -> float:
+        """
+        动态注意力温度：
+          · 唤醒↑ -> 视野变窄(隧道效应)：temp 收缩，注意力向最强念集中；
+          · 疲劳↑ -> 想集中也集中不了：temp 放大，多念趋向平分。
+        """
+        t = base \
+            * (1.0 - config.ATTN_NARROW_AROUSAL * _clamp01(arousal)) \
+            * (1.0 + config.ATTN_SPREAD_FATIGUE * _clamp01(fatigue))
+        return max(1e-3, t)
+
+    def tick_fatigue(self, dt: float, load: float) -> float:
+        """
+        注意力疲劳更新：随时间指数恢复，随本轮刺激负载线性消耗。
+        load ∈ [0,1]：本轮候选念的饱和事件强度均值（刺激越大越费神）。
+        返回当前疲劳[0,1]。
+        """
+        self.attn_fatigue = _clamp01(
+            self.attn_fatigue * math.exp(-config.ATTN_FATIGUE_RECOVER * max(0.0, dt))
+            + config.ATTN_FATIGUE_PER_THINK
+            + config.ATTN_FATIGUE_LOAD_K * _clamp01(load)
+        )
+        return self.attn_fatigue
+
     # ---------- 持久化 ----------
     def to_dict(self) -> dict:
-        return {"valence": self.valence, "arousal": self.arousal}
+        return {"valence": self.valence, "arousal": self.arousal,
+                "attn_fatigue": self.attn_fatigue}
 
     @classmethod
     def from_dict(cls, d: dict) -> "AffectState":
         obj = cls()
         obj.valence = _clamp(float(d.get("valence", config.MOOD_VALENCE_INIT)), -1.0, 1.0)
         obj.arousal = _clamp01(float(d.get("arousal", config.MOOD_AROUSAL_INIT)))
+        obj.attn_fatigue = _clamp01(float(d.get("attn_fatigue", 0.0)))
         return obj

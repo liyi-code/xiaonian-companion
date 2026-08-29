@@ -74,17 +74,6 @@ CONFIG = {
 
     "data_dir": os.path.join(BASE_DIR, "data"),
 
-    # —— 小念的 IM 接入（QQ / 微信）——
-    "qq_enabled": _bool(os.getenv("QQ_ENABLED", "false")),
-    "qq_ws_url": os.getenv("QQ_WS_URL", "ws://127.0.0.1:6700"),
-    "qq_token": os.getenv("QQ_TOKEN", ""),
-    "qq_owner": os.getenv("QQ_OWNER", ""),
-    "wechat_enabled": _bool(os.getenv("WECHAT_ENABLED", "false")),
-    "wechat_type": os.getenv("WECHAT_TYPE", "gewe"),          # gewe(免费) | padlocal(付费更稳)
-    "wechat_ws_url": os.getenv("WECHAT_WS_URL", "ws://127.0.0.1:2531"),
-    "wechat_token": os.getenv("WECHAT_TOKEN", ""),
-    "wechat_owner": os.getenv("WECHAT_OWNER", ""),
-
     # —— 小念的 Live2D 桌面形象 ——
     "live2d_enabled": _bool(os.getenv("LIVE2D_ENABLED", "false")),
     "live2d_model": _resolve_path(os.getenv("LIVE2D_MODEL", "")),
@@ -141,17 +130,6 @@ CONFIG = {
         "SCREEN_WATCH_IGNORE",
         "explorer.exe,searchhost.exe,shellexperiencehost.exe,startmenuexperiencehost.exe,lockapp.exe,textinputhost.exe,applicationframehost.exe"
     ).split(",") if x.strip()],  # 忽略的系统/桌面进程
-
-    # —— 3D 世界感知 + 主动探索（建立在意识模型之上）——
-    # 小念在 3D 游戏里拥有「独立预加载 + 符号感知 + 低频视觉快照 + 主动探索」能力：
-    # 只感知已加载范围内的符号信息(无图像)，结合低频 1080p 视觉快照做「符号+像素」联合推理，
-    # 并把这一切喂给意识层(clayer)做联想，最终由意识层的价值/好奇信号驱动她主动走动探索世界。
-    "world_autonomy_enabled": _bool(os.getenv("WORLD_AUTONOMY_ENABLED", "true")),  # 世界感知+主动探索总开关
-    "world_vision_enabled": _bool(os.getenv("WORLD_VISION_ENABLED", "true")),     # 是否对视觉快照做视觉推理
-    "world_explore_interval": float(os.getenv("WORLD_EXPLORE_INTERVAL", "3.0")),  # 探索决策间隔(秒)
-    "world_vision_max_width": int(os.getenv("WORLD_VISION_MAX_WIDTH", "1280")),   # 视觉快照送入API前的压缩宽度(1080p→降token)
-    "world_interest_radius": float(os.getenv("WORLD_INTEREST_RADIUS", "12.0")),  # 主动探索的兴趣半径(米)；仅加载范围内有效
-    "world_move_speed": float(os.getenv("WORLD_MOVE_SPEED", "2.5")),              # 探索移动速度(米/秒，仅告知Unity参考)
 
     # —— 小念的「受约束自主权限」：只改白名单内的配置文件，绝不碰系统/代码 ——
     # 总开关：true 时小念可观察你的习惯并在白名单内自主微调参数；

@@ -407,6 +407,10 @@ class TTS:
         self.ref_text = ref_text
         self.speed = float(speed)
         self.volume = float(volume)
+        # 用户配置的基准值：情绪语音风格（emotion.voice_style）以它为基准乘倍率，
+        # 不会覆盖用户在设置里定的语速/音量。
+        self.base_speed = self.speed
+        self.base_volume = self.volume
         self.if_sr = bool(if_sr)            # 超分降噪(super_sampling)
         self.sample_steps = int(sample_steps)  # v2 采样步数：8 够用且快
         self.output_device = output_device  # 扬声器设备：""=系统默认；或索引/名子串
@@ -414,7 +418,7 @@ class TTS:
     def is_ready(self):
         return self.enabled and bool(self.ref_audio) and bool(self.url)
 
-    def speak(self, text, on_play=None, on_level=None, on_audio=None):
+    def speak(self, text, on_play=None, on_level=None, on_audio=None, on_error=None):
         """合成并播放。出错时返回错误信息字符串（调用方决定是否展示）。
 
         on_play: 可选回调，在音频「开始播放」前被调用（仅 200 成功时）。
@@ -426,6 +430,8 @@ class TTS:
         播放）。用于把语音推给外部渲染端（如 3D 游戏引擎）自行播放——
         此时 on_play 仍会触发（告知“开始说话”），on_level 可选（若外部
         自行做口型同步则无需传）。
+        on_error: 可选回调，合成失败时【立即】在后台线程调用 on_error(msg)，
+        不用等已排队的音频播完（注意线程安全，UI 侧需自行切回主线程）。
         """
         if not self.enabled:
             return None
@@ -444,37 +450,71 @@ class TTS:
             return None
         # 长文本切分：GPT-SoVITS 单次 /tts 对文本长度敏感，且整段合成耗时会随字数
         # 线性增长（实测 ~300 字约 25s）。若一条回复过长，单次请求极易超过超时
-        # 而失败（"长语音不合成"）。这里按句切成小段，逐句合成+顺序播放：
-        #   · 每句都在超时内、声音更早出来；
-        #   · 音色一致（每句都用同一参考音/提示文本）；
-        #   · 口型(on_level)逐句连续驱动；首句触发 on_play(气泡+说话动作)，末句后才归位。
+        # 而失败（"长语音不合成"）。这里按句切成小段。
+        # 关键修复（断断续续的根因）：旧实现是「合成一句 → 播放一句 → 再合成下一句」，
+        # 每两句之间隔着一次完整 HTTP 合成延迟（0.5~3s），表现就是"说几个字没声音、
+        # 过一会又有声音"。现在改成流水线：后台线程不断合成后续句子，播放线程从
+        # 队列里取出来连续播放——首句出来就开始说话，后面的句子在播放期间就绪，
+        # 整段声音连续不断。
         chunks = _split_long_text(text, max_chars=150)
+        if not chunks:
+            return None
+        import queue
+        q = queue.Queue()
+        err_box = []
+
+        def _producer():
+            for ch in chunks:
+                try:
+                    resp = requests.post(
+                        self.url.rstrip("/") + "/tts",
+                        # api_v2.py 的 POST /tts 端点(TTS_Request 模型)字段名如下：
+                        # ref_audio_path / text_lang / prompt_lang / speed_factor /
+                        # super_sampling(降噪) / sample_steps。旧代码用的 text_language/
+                        # refer_wav_path/speed/if_sr 全部对不上，导致降噪、语速、参考音频
+                        # 从未真正生效。
+                        json={
+                            "text": ch,
+                            "text_lang": "zh",
+                            "ref_audio_path": self.ref_audio,
+                            "prompt_text": self.ref_text,
+                            "prompt_lang": "zh",
+                            "speed_factor": self.speed,
+                            "super_sampling": self.if_sr,  # 超分降噪(默认关；开则更干净)
+                            "sample_steps": self.sample_steps,  # 8 够用且快；越大越细腻越慢
+                        },
+                        timeout=90,
+                    )
+                except Exception as e:
+                    err_box.append(f"语音合成/播放失败：{e}")
+                    print(f"[TTS] 合成失败：{e}", flush=True)
+                    if on_error:
+                        try:
+                            on_error(err_box[0])
+                        except Exception:
+                            pass
+                    q.put(None)
+                    return
+                if resp.status_code != 200:
+                    err_box.append(f"GPT-SoVITS 返回错误 {resp.status_code}：{resp.text[:200]}")
+                    print(f"[TTS] {err_box[0]}", flush=True)
+                    if on_error:
+                        try:
+                            on_error(err_box[0])
+                        except Exception:
+                            pass
+                    q.put(None)
+                    return
+                q.put(resp.content)
+            q.put(None)
+
+        threading.Thread(target=_producer, daemon=True).start()
+
         played_first = False
-        for ch in chunks:
-            try:
-                resp = requests.post(
-                    self.url.rstrip("/") + "/tts",
-                    # api_v2.py 的 POST /tts 端点(TTS_Request 模型)字段名如下：
-                    # ref_audio_path / text_lang / prompt_lang / speed_factor /
-                    # super_sampling(降噪) / sample_steps。旧代码用的 text_language/
-                    # refer_wav_path/speed/if_sr 全部对不上，导致降噪、语速、参考音频
-                    # 从未真正生效。
-                    json={
-                        "text": ch,
-                        "text_lang": "zh",
-                        "ref_audio_path": self.ref_audio,
-                        "prompt_text": self.ref_text,
-                        "prompt_lang": "zh",
-                        "speed_factor": self.speed,
-                        "super_sampling": self.if_sr,  # 超分降噪(默认关；开则更干净)
-                        "sample_steps": self.sample_steps,  # 8 够用且快；越大越细腻越慢
-                    },
-                    timeout=90,
-                )
-            except Exception as e:
-                return f"语音合成/播放失败：{e}"
-            if resp.status_code != 200:
-                return f"GPT-SoVITS 返回错误 {resp.status_code}：{resp.text[:200]}"
+        while True:
+            wav = q.get()
+            if wav is None:
+                break
             # 首句音频即将开始播放：先触发形象口型/动作/气泡，使其与声音起点对齐
             if not played_first:
                 if on_play:
@@ -486,10 +526,10 @@ class TTS:
             if on_audio is not None:
                 # 3D 模式：把 wav 字节交给外部渲染端（如游戏引擎）播放，本机不发音
                 try:
-                    on_audio(resp.content)
+                    on_audio(wav)
                 except Exception:
                     pass
             else:
-                play_wav_bytes(resp.content, self.volume, on_level=on_level,
+                play_wav_bytes(wav, self.volume, on_level=on_level,
                                output_device=self.output_device)
-        return None
+        return err_box[0] if err_box else None

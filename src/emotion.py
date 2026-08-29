@@ -47,6 +47,15 @@ TRAIT_PROMPT = {
     "黏人紧张": "你现在有点不安/黏人，会更想确认他在不在意你、更主动索求关注，但别过度。",
 }
 
+# 各主导情绪的「说话方式」提示（注入 prompt，让 token 输出的措辞/句长/标点随情绪变）
+SPEECH_STYLE = {
+    "开心": "说话轻快，多用短句和语气词（呀/啦/嘿嘿），感叹号多一点，爱笑爱夸他",
+    "生气": "语气急促一点、带点小抱怨和嘟囔，句子短、反问和感叹多一点，但嘴硬心软",
+    "伤心": "语气放慢放软，句子短一点，多一点停顿、语气词和求安慰，像声音有点哽咽",
+    "平静": "语气舒缓自然，句子从容，温柔体贴地慢慢说",
+    "不安": "语气有点急、声音放轻，短句多一点，会反复确认他的态度，偶尔有点结巴",
+}
+
 # 各性格的「肢体动作偏好」（动作受性格权重影响的核心数据）。
 # speed_mul / amplitude_mul：对情感(joy)算出的基础 speed/amplitude 再乘的倍率；
 # lean：身体前倾/后仰倾向（- 后缩/矜持，+ 前倾/亲近）；
@@ -337,9 +346,11 @@ class EmotionEngine:
             sec_trait = TRAIT_BY_DIM[secondary]
             sec_note = (f"同时，你心里偶尔也藏着一点「{sec_trait}」的小情绪——"
                         f"那只是你性格里的一层底色，不改变你爱他、想让他更好的本心。")
+        style_hint = SPEECH_STYLE.get(emo_desc, "")
         return (
             f"\n【此刻的心情与性格】你当前的性格底色偏向「{trait}」：{trait_hint}"
             f"这一刻你心里最主要的情绪是「{emo_desc}」。{sec_note}"
+            f"你【说话的方式】也要随心情变：{style_hint}。"
             f"请在回应里自然地流露出这份心情与性格，但记住——无论你此刻是什么情绪，"
             f"你【始终不变的最终目的】都是让他的生活越来越好；情绪只改变你说话的语气和温度，"
             f"绝不改变你的原则（尤其是健康底线）。你可以闹小脾气、可以撒娇、可以需要被安慰，"
@@ -356,6 +367,33 @@ class EmotionEngine:
             return "calm"
         emo = dict(self.emotion)
         return max(EMOTION_DIMS, key=lambda k: emo[k])
+
+    def voice_style(self):
+        """情绪 → 语音参数（语速/音量倍率），供 TTS 逐句应用，让声音跟着心情变。
+
+        返回 {"speed": 语速倍率(0.7~1.3), "volume": 音量倍率(0.65~1.2), "desc": 主导情绪名}。
+        - 开心：轻快明亮（语速↑ 音量↑）
+        - 生气：急促有力（语速↑ 音量↑）
+        - 伤心：慢而轻、像哽咽（语速↓ 音量↓）
+        - 平静：舒缓放松（语速略↓）
+        - 不安：快而小声（语速↑ 音量↓）
+        调用方用「用户配置基准 × 倍率」，不覆盖用户的音色/语速设定。
+        """
+        if not self.enabled:
+            return {"speed": 1.0, "volume": 1.0, "desc": "平静"}
+        e = dict(self.emotion)
+        joy = float(e.get("joy", 0.0))
+        anger = float(e.get("anger", 0.0))
+        sad = float(e.get("sadness", 0.0))
+        calm = float(e.get("calm", 0.0))
+        anx = float(e.get("anxiety", 0.0))
+        speed = 1.0 + joy * 0.22 + anger * 0.18 + anx * 0.12 - sad * 0.28 - calm * 0.08
+        volume = 1.0 + joy * 0.08 + anger * 0.15 - sad * 0.18 - anx * 0.10
+        speed = max(0.7, min(1.3, speed))
+        volume = max(0.65, min(1.2, volume))
+        dom = self.dominant()
+        return {"speed": round(speed, 3), "volume": round(volume, 3),
+                "desc": EMOTION_LABELS.get(dom, dom)}
 
     def motion_params(self):
         """返回当前「性格 + 情感」融合后的肢体动作参数，供动作下发使用。

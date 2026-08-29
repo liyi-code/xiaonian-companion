@@ -38,6 +38,14 @@ public class ConceptStateMachine : MonoBehaviour
     public bool mirrorArmZ = true;
     [Tooltip("待机头部抬升角(度)：补偿模型自带的前倾/低头，正值=抬头")]
     public float headLiftAngle = 8f;
+    [Tooltip("挺直腰板：脊柱后展角(度)。模型自带前倾/弯腰时调大，正值=更挺直")]
+    public float straightenSpine = 14f;
+    [Tooltip("挺直腰板：胸腔后展角(度)")]
+    public float straightenChest = 9f;
+    [Tooltip("挺直腰板：髋部后倾角(度)。像'撅屁股'(骨盆前倾)时调大；世界方向增量旋转，安全不翻倒")]
+    public float straightenHips = 8f;
+    [Tooltip("待机手臂外展角(度)：手贴大腿/穿模时调大，待机时手稍微张开")]
+    public float restArmSpread = 8f;
 
     [Header("自检(上线前关掉)")]
     public bool autoTestOnStart = false;     // 启动后自动播一次 ACT_WAVE，绕过 Python 验证动画链路
@@ -48,6 +56,7 @@ public class ConceptStateMachine : MonoBehaviour
     private Transform _leftLowerArm;
     private Transform _rightUpperArm;
     private Transform _rightLowerArm;
+    private Transform _hips;
     private Transform _spine;
     private Transform _chest;
     private Transform _neck;
@@ -67,6 +76,7 @@ public class ConceptStateMachine : MonoBehaviour
             _leftLowerArm = _anim.GetBoneTransform(HumanBodyBones.LeftLowerArm);
             _rightUpperArm = _anim.GetBoneTransform(HumanBodyBones.RightUpperArm);
             _rightLowerArm = _anim.GetBoneTransform(HumanBodyBones.RightLowerArm);
+            _hips = _anim.GetBoneTransform(HumanBodyBones.Hips);
             _spine = _anim.GetBoneTransform(HumanBodyBones.Spine);
             _chest = _anim.GetBoneTransform(HumanBodyBones.Chest);
             _neck = _anim.GetBoneTransform(HumanBodyBones.Neck);
@@ -608,11 +618,29 @@ public class ConceptStateMachine : MonoBehaviour
         }
 
         bool poseBusy = _waveActive || _nodActive;
-        // 挺直修正只针对"有控制器且其 Idle 含胸"的老模型（Starter Assets）；
-        // 无控制器的 VRM 没有前倾要纠正，套用会变成明显后仰——这里只在有控制器时施加。
+        // 挺直腰板修正：
+        //  · 有控制器：Idle 剪辑（Starter Assets）自带含胸前倾 → 用较强后展 -22/-18 拉回；
+        //  · 无控制器：VRM 绑定姿势自带轻微前倾（看起来弯腰）→ 用 Inspector 可调的
+        //    straightenSpine / straightenChest 温和后展挺直腰板
+        //    （人类骨骼惯例：-X=向后展，与"负X=抬头"同方向）；
+        //  · 动作中（挥手/点头）暂停修正，让动作自然不被拉直。
         bool hasController = _anim.runtimeAnimatorController != null;
-        Quaternion spineFix = (poseBusy || !hasController) ? Quaternion.identity : _standTallSpine;
-        Quaternion chestFix = (poseBusy || !hasController) ? Quaternion.identity : _standTallChest;
+        Quaternion spineFix, chestFix;
+        if (poseBusy)
+        {
+            spineFix = Quaternion.identity;
+            chestFix = Quaternion.identity;
+        }
+        else if (hasController)
+        {
+            spineFix = _standTallSpine;
+            chestFix = _standTallChest;
+        }
+        else
+        {
+            spineFix = Quaternion.Euler(-straightenSpine, 0f, 0f);
+            chestFix = Quaternion.Euler(-straightenChest, 0f, 0f);
+        }
 
         // —— 双通道写入：Animator 通道 + 直接写骨骼 Transform ——
         // 无 AnimatorController 的 VRM 上 SetBoneLocalRotation 可能不生效（旧现象：
@@ -624,13 +652,24 @@ public class ConceptStateMachine : MonoBehaviour
         if (_chest != null) _chest.localRotation = chestFix * _breathChestRot;
         if (_neck != null) _neck.localRotation = _idleNeckRot;
 
-        // 手臂自然垂放（rig 无关实现：用"肩→肘"的实际世界方向，不依赖骨骼本地轴假设）
+        // 髋部挺直（解决"撅着屁股"/骨盆前倾）：把「髋→胸」世界方向增量拉回竖直。
+        // 关键：Hips 的绑定局部旋转通常非零，绝不能整值覆盖（会翻倒/倒立），
+        // 只能用 world 增量（FromToRotation）叠加在其当前旋转上——安全且rig无关。
+        if (!poseBusy && straightenHips > 0f)
+            TiltHipsBack(_hips, _spine != null ? _spine : _chest, straightenHips);
+
+        // 手臂自然垂放（rig 无关实现：用"肩→肘"的实际世界方向，不依赖骨骼本地轴假设）。
+        // 待机时向外展开 restArmSpread 度，避免手贴大腿/裙摆穿模。
+        Vector3 fwd = transform.forward;
+        fwd.y = 0f;
+        if (fwd.sqrMagnitude < 0.001f) fwd = Vector3.forward;
+        fwd.Normalize();
         if (!_waveActive)
         {
-            PointBoneDown(_leftUpperArm, _leftLowerArm);
+            PointArmDownSpread(_leftUpperArm, _leftLowerArm, fwd, restArmSpread, leftSide: true);
             if (_leftLowerArm != null) _leftLowerArm.localRotation = Quaternion.identity;
         }
-        PointBoneDown(_rightUpperArm, _rightLowerArm);
+        PointArmDownSpread(_rightUpperArm, _rightLowerArm, fwd, restArmSpread, leftSide: false);
         if (_rightLowerArm != null) _rightLowerArm.localRotation = Quaternion.identity;
 
         // 阻尼跟随：当前值向目标值 Slerp，消除每帧硬跳 / 结束瞬移（解决“生硬”）
@@ -668,13 +707,40 @@ public class ConceptStateMachine : MonoBehaviour
         }
     }
 
-    /// <summary>把上臂转到竖直向下：用肩→肘的实际世界方向做 FromToRotation，与骨骼本地轴无关。</summary>
-    private void PointBoneDown(Transform shoulder, Transform elbow)
+    /// <summary>手臂自然垂放 + 轻微外展：先用"肩→肘"的实际世界方向指向竖直向下（与骨骼
+    /// 本地轴无关），再绕"模型前方轴"向外展开 spreadDeg（左手向左、右手向右），避免手贴身穿模。</summary>
+    private void PointArmDownSpread(Transform shoulder, Transform elbow, Vector3 forward, float spreadDeg, bool leftSide)
     {
         if (shoulder == null || elbow == null) return;
         Vector3 dir = (elbow.position - shoulder.position).normalized;
         if (dir.sqrMagnitude < 0.0001f) return;
+        // 1) 先指向竖直向下
         shoulder.rotation = Quaternion.FromToRotation(dir, Vector3.down) * shoulder.rotation;
+        // 2) 再绕模型前方轴外展：左手向身体左侧(-right)，右手向身体右侧(+right)
+        float s = leftSide ? -spreadDeg : spreadDeg;
+        shoulder.rotation = Quaternion.AngleAxis(s, forward) * shoulder.rotation;
+    }
+
+    /// <summary>把「髋→胸」方向增量拉回竖直：解决骨盆前倾（撅屁股）式弯腰。
+    /// 只做 world 增量旋转（FromToRotation 叠加在当前旋转上），绝不整值覆盖 Hips 的
+    /// 绑定旋转——对任何 rig 都安全（不会翻倒）；每帧最多后仰 maxDeg，收敛到接近直立。</summary>
+    private void TiltHipsBack(Transform hips, Transform upper, float maxDeg)
+    {
+        if (hips == null || upper == null) return;
+        Vector3 dir = upper.position - hips.position;
+        if (dir.sqrMagnitude < 0.0001f) return;
+        dir.Normalize();
+        // 已接近竖直就停手，避免每帧反复拉拽抖动
+        float tilt = Vector3.Angle(dir, Vector3.up);
+        if (tilt < 1f) return;
+        // 绕「水平右轴」把前倾的 dir 转回竖直
+        Vector3 right = Vector3.Cross(Vector3.up, dir);
+        if (right.sqrMagnitude < 0.001f) return;
+        right.Normalize();
+        float step = Mathf.Min(tilt, maxDeg);
+        Quaternion rot = Quaternion.AngleAxis(-step, right);
+        Vector3 target = rot * dir;
+        hips.rotation = Quaternion.FromToRotation(dir, target) * hips.rotation;
     }
 
     private IEnumerator FacePlayerOnce(float duration)
