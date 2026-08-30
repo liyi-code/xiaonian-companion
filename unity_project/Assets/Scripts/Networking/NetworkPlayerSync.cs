@@ -366,8 +366,10 @@ public class NetworkPlayerSync : NetworkBehaviour
         if (IsHostRig)
         {
             SaveVoiceWav(playerId, wav);
-            if (BridgeHub.Instance != null && BridgeHub.Instance.IsOpen)
+            bool open = BridgeHub.Instance != null && BridgeHub.Instance.IsOpen;
+            if (open)
                 BridgeHub.Instance.SendVoiceInput(playerId, System.Convert.ToBase64String(wav));
+            Debug.Log($"[语音] 送桥 voice_input player={playerId}（桥连接={open}）");
         }
         // 所有端（除说话人自己）：在说话人化身位置 3D 播放，实现"听到谁在哪说话"
         if (Runner != null && Runner.LocalPlayer.PlayerId != playerId)
