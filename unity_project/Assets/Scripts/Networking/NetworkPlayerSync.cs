@@ -434,20 +434,54 @@ public class NetworkPlayerSync : NetworkBehaviour
     }
 
     // ---------------- 小念语音广播（主机 → 所有客户端）----------------
-    /// <summary>主机把桥推来的小念语音转发给所有客户端；远端各自在本机 NPC 上 3D 播放。</summary>
+    // 注意：Fusion 2 RPC 载荷上限 512 字节，整段 wav 必须分块（448/块）再发。
+    static int _npcClipSeq;
+    static readonly System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<byte[]>> _npcParts
+        = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<byte[]>>();
+    static readonly System.Collections.Generic.Dictionary<int, int> _npcTotal
+        = new System.Collections.Generic.Dictionary<int, int>();
+
+    /// <summary>主机把桥推来的小念语音分块转发给所有客户端；远端组装后本机 NPC 3D 播放。</summary>
     public static void BroadcastNpcAudio(byte[] wav)
     {
         var inst = LocalInstance;
         if (inst == null || !inst.Object.HasStateAuthority) return;
         if (!IsHostRig) return;   // 只有主机收到桥音频，才需要转发
-        try { inst.RPC_NpcAudio(wav); } catch (System.Exception) { }
+        if (wav == null || wav.Length == 0) return;
+        try
+        {
+            int id = System.Threading.Interlocked.Increment(ref _npcClipSeq);
+            const int CHUNK = 448;
+            int total = Mathf.CeilToInt(wav.Length / (float)CHUNK);
+            for (int i = 0; i < total; i++)
+            {
+                int len = Mathf.Min(CHUNK, wav.Length - i * CHUNK);
+                var part = new byte[len];
+                System.Array.Copy(wav, i * CHUNK, part, 0, len);
+                inst.RPC_NpcAudioChunk(id, i, total, part);
+            }
+        }
+        catch (System.Exception) { }
     }
 
     [Rpc(RpcSources.All, RpcTargets.All)]
-    public void RPC_NpcAudio(byte[] wav)
+    public void RPC_NpcAudioChunk(int clipId, int chunkIndex, int totalChunks, byte[] data)
     {
         if (IsHostRig) return;   // 主机已走本地播放路径，避免双播
+        if (!_npcParts.TryGetValue(clipId, out var parts))
+        {
+            parts = new System.Collections.Generic.List<byte[]>();
+            _npcParts[clipId] = parts;
+            _npcTotal[clipId] = totalChunks;
+        }
+        while (parts.Count <= chunkIndex) parts.Add(null);
+        parts[chunkIndex] = data;
+        int got = 0;
+        foreach (var p in parts) if (p != null) got++;
+        if (got < _npcTotal[clipId]) return;
+        _npcParts.Remove(clipId);
+        _npcTotal.Remove(clipId);
         var npc = FindObjectOfType<NpcAgent>();
-        if (npc != null) npc.PlayWavBytes(wav);
+        if (npc != null) npc.PlayWavBytes(AssembleVoice(parts));
     }
 }
