@@ -216,6 +216,14 @@ public class BridgeHub : MonoBehaviour
     public void SendUserInput(string npcId, string text) =>
         Send(npcId, "user_input", o => o["text"] = text);
 
+    /// <summary>自建语音通道：把整段语音 wav 交给桥做 ASR + 声纹识别。</summary>
+    public void SendVoiceInput(int playerId, string wavB64) =>
+        Send("host", "voice_input", o => { o["player_id"] = playerId; o["wav_b64"] = wavB64; });
+
+    /// <summary>自建语音通道：注册声纹（名字 + 一段语音）。</summary>
+    public void SendVoiceEnroll(string name, string wavB64) =>
+        Send("host", "voice_enroll", o => { o["name"] = name; o["wav_b64"] = wavB64; });
+
     /// <summary>发送感知刺激事件（玩家接近/社交等），兼容旧 NpcBridgeClient.SendStimuli</summary>
     public void SendStimuli(string npcId, List<string> stimuli, float weight) =>
         Send(npcId, "stimuli", o => {

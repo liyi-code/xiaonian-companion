@@ -10,3 +10,7 @@ faster-whisper>=1.0.0
 Pillow>=10.0.0
 websockets>=12.0
 python-osc>=1.8.3
+
+# 声纹识别（自建 3D 语音通道；首次使用自动从 modelscope 下载中文声纹模型）
+wespeaker>=1.0.0
+modelscope>=1.9.0

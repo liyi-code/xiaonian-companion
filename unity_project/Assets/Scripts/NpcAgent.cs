@@ -42,6 +42,11 @@ public class NpcAgent : MonoBehaviour
         _ctrl = GetComponent<AgentController>();
         _audio = GetComponent<AudioSource>();
         if (_audio == null) _audio = gameObject.AddComponent<AudioSource>();
+        // 3D 空间音：小念的声音从她身上发出、随距离衰减（自建语音通道）
+        _audio.spatialBlend = 1f;
+        _audio.minDistance = 0.5f;
+        _audio.maxDistance = 25f;
+        _audio.rolloffMode = AudioRolloffMode.Linear;
         BridgeHub.Instance?.RegisterAgent(this);
         gameObject.name = "NPC_" + name + "_" + id;
         EnsureBubbleUI();
@@ -419,8 +424,23 @@ public class NpcAgent : MonoBehaviour
             var clip = WavUtil.ToAudioClip(wav);   // 见 WavUtil.cs（小工具）
             _audio.clip = clip;
             _audio.Play();
+            // 主机：把桥推来的小念语音转发给所有客户端（自建 3D 语音通道），
+            // 远端各自在本机 NPC 上 3D 播放——人人都在她身边听到她。
+            try { NetworkPlayerSync.BroadcastNpcAudio(wav); } catch (Exception) { }
         }
         catch (Exception ex) { Debug.LogError($"[{displayName}] 音频解码失败: {ex.Message}"); }
+    }
+
+    /// <summary>自建语音通道：远端客户端播放主机转来的小念语音（本机 NPC 上 3D 播放）。</summary>
+    public void PlayWavBytes(byte[] wav)
+    {
+        if (wav == null || wav.Length == 0 || _audio == null) return;
+        try
+        {
+            _audio.clip = WavUtil.ToAudioClip(wav);
+            _audio.Play();
+        }
+        catch (Exception ex) { Debug.LogError($"[{displayName}] 远端音频播放失败: {ex.Message}"); }
     }
 
     // ---------------- 主动探索命令（来自 explorer）----------------

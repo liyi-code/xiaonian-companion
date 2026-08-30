@@ -41,6 +41,12 @@ public class NetworkPlayerSync : NetworkBehaviour
     Animator _anim;
     readonly Transform[] _bones = new Transform[BONE_COUNT];
 
+    // —— 自建 3D 语音通道 ——
+    // 玩家ID → 化身根：远端客户端按说话人位置做 3D 播放
+    public static readonly System.Collections.Generic.Dictionary<int, Transform> PlayerRegistry
+        = new System.Collections.Generic.Dictionary<int, Transform>();
+    public static NetworkPlayerSync LocalInstance;   // 本机玩家实例（主机转发小念语音用）
+
     // Update 采集的输入（FixedUpdateNetwork 执行）
     Vector3 _moveInput;
     float _yawInput;
@@ -65,6 +71,7 @@ public class NetworkPlayerSync : NetworkBehaviour
         if (_cc != null) _cc.jumpImpulse = jumpImpulse;
         if (Object.HasStateAuthority)
         {
+            LocalInstance = this;
             _cam = GetComponentInChildren<Camera>();
             if (_cam == null)
             {
@@ -107,6 +114,18 @@ public class NetworkPlayerSync : NetworkBehaviour
         // 化身骨骼缓存（联网同步用；所有端都缓存）
         _anim = GetComponentInChildren<Animator>();
         CacheAvatarBones();
+
+        // 自建语音通道注册：玩家ID → 化身根（供远端 3D 播放定位）
+        if (Runner != null)
+            PlayerRegistry[Runner.LocalPlayer.PlayerId] = transform;
+    }
+
+    void OnDestroy()
+    {
+        if (Runner != null)
+            PlayerRegistry.Remove(Runner.LocalPlayer.PlayerId);
+        if (LocalInstance == this)
+            LocalInstance = null;
     }
 
     void CacheAvatarBones()
@@ -305,11 +324,11 @@ public class NetworkPlayerSync : NetworkBehaviour
     static readonly System.Collections.Generic.Dictionary<int, int> _voiceTotal
         = new System.Collections.Generic.Dictionary<int, int>();
 
-    /// <summary>语音分块 RPC（Fusion 代码生成器确认支持 byte[] 参数；4KB/块，可靠有序）。</summary>
+    /// <summary>语音分块 RPC（Fusion 代码生成器确认支持 byte[] 参数；4KB/块，可靠有序）。
+    /// 所有端都会组装：主机 → 落盘 + 送桥做 ASR/声纹；其它端 → 在说话人化身位置 3D 播放。</summary>
     [Rpc(RpcSources.All, RpcTargets.All)]
     public void RPC_VoiceChunk(int playerId, int chunkIndex, int totalChunks, byte[] data)
     {
-        if (!IsHostRig) return;   // 只有主机保存（下一步：接到桥的 ASR 转文字）
         if (!_voiceParts.TryGetValue(playerId, out var parts))
         {
             parts = new System.Collections.Generic.List<byte[]>();
@@ -320,15 +339,68 @@ public class NetworkPlayerSync : NetworkBehaviour
         parts[chunkIndex] = data;
         int got = 0;
         foreach (var p in parts) if (p != null) got++;
-        if (got >= _voiceTotal[playerId])
+        if (got < _voiceTotal[playerId]) return;
+
+        var wav = AssembleVoice(parts);
+        _voiceParts.Remove(playerId);
+        _voiceTotal.Remove(playerId);
+        if (wav == null) return;
+
+        // 主机：落盘（留档）+ 交给桥做 ASR + 声纹识别
+        if (IsHostRig)
         {
-            SaveVoiceWav(playerId, parts);
-            _voiceParts.Remove(playerId);
-            _voiceTotal.Remove(playerId);
+            SaveVoiceWav(playerId, wav);
+            if (BridgeHub.Instance != null && BridgeHub.Instance.IsOpen)
+                BridgeHub.Instance.SendVoiceInput(playerId, System.Convert.ToBase64String(wav));
+        }
+        // 所有端（除说话人自己）：在说话人化身位置 3D 播放，实现"听到谁在哪说话"
+        if (Runner != null && Runner.LocalPlayer.PlayerId != playerId)
+            PlayVoiceAt(playerId, wav);
+    }
+
+    static byte[] AssembleVoice(System.Collections.Generic.List<byte[]> parts)
+    {
+        int len = 0;
+        foreach (var p in parts) if (p != null) len += p.Length;
+        if (len == 0) return null;
+        var wav = new byte[len];
+        int off = 0;
+        foreach (var p in parts)
+            if (p != null)
+            {
+                System.Array.Copy(p, 0, wav, off, p.Length);
+                off += p.Length;
+            }
+        return wav;
+    }
+
+    /// <summary>在说话人化身位置用 3D AudioSource 播放（距离衰减/立体声定位）。</summary>
+    void PlayVoiceAt(int playerId, byte[] wav)
+    {
+        try
+        {
+            if (!PlayerRegistry.TryGetValue(playerId, out var root) || root == null) return;
+            var src = root.GetComponentInChildren<AudioSource>();
+            if (src == null)
+            {
+                var go = new GameObject("Voice3D");
+                go.transform.SetParent(root, false);
+                go.transform.localPosition = new Vector3(0f, 1.45f, 0f);
+                src = go.AddComponent<AudioSource>();
+            }
+            src.spatialBlend = 1f;
+            src.minDistance = 0.5f;
+            src.maxDistance = 20f;
+            src.rolloffMode = AudioRolloffMode.Linear;
+            src.PlayOneShot(WavUtil.ToAudioClip(wav));
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning("[语音] 3D 播放失败：" + e.Message);
         }
     }
 
-    void SaveVoiceWav(int playerId, System.Collections.Generic.List<byte[]> parts)
+    void SaveVoiceWav(int playerId, byte[] wav)
     {
         try
         {
@@ -336,33 +408,30 @@ public class NetworkPlayerSync : NetworkBehaviour
             System.IO.Directory.CreateDirectory(dir);
             var path = System.IO.Path.Combine(dir,
                 $"voice_p{playerId}_{System.DateTime.Now:yyyyMMdd_HHmmss}.wav");
-            using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Create))
-            using (var bw = new System.IO.BinaryWriter(fs))
-            {
-                int dataLen = 0;
-                foreach (var p in parts) if (p != null) dataLen += p.Length;
-                int rate = 16000, channels = 1, bits = 16;
-                bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
-                bw.Write(36 + dataLen);
-                bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVE"));
-                bw.Write(System.Text.Encoding.ASCII.GetBytes("fmt "));
-                bw.Write(16);
-                bw.Write((short)1);
-                bw.Write((short)channels);
-                bw.Write(rate);
-                bw.Write(rate * channels * bits / 8);
-                bw.Write((short)(channels * bits / 8));
-                bw.Write((short)bits);
-                bw.Write(System.Text.Encoding.ASCII.GetBytes("data"));
-                bw.Write(dataLen);
-                foreach (var p in parts)
-                    if (p != null) bw.Write(p);
-            }
+            System.IO.File.WriteAllBytes(path, wav);
             Debug.Log($"[语音] 已保存玩家 {playerId} 的语音：{path}");
         }
         catch (System.Exception e)
         {
             Debug.LogWarning("[语音] 保存失败：" + e.Message);
         }
+    }
+
+    // ---------------- 小念语音广播（主机 → 所有客户端）----------------
+    /// <summary>主机把桥推来的小念语音转发给所有客户端；远端各自在本机 NPC 上 3D 播放。</summary>
+    public static void BroadcastNpcAudio(byte[] wav)
+    {
+        var inst = LocalInstance;
+        if (inst == null || !inst.Object.HasStateAuthority) return;
+        if (!IsHostRig) return;   // 只有主机收到桥音频，才需要转发
+        try { inst.RPC_NpcAudio(wav); } catch (System.Exception) { }
+    }
+
+    [Rpc(RpcSources.All, RpcTargets.All)]
+    public void RPC_NpcAudio(byte[] wav)
+    {
+        if (IsHostRig) return;   // 主机已走本地播放路径，避免双播
+        var npc = FindObjectOfType<NpcAgent>();
+        if (npc != null) npc.PlayWavBytes(wav);
     }
 }

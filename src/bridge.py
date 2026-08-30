@@ -517,6 +517,11 @@ class GameBridge:
                     )
                 elif mtype == "ping":
                     self._push(ws, {"type": "pong"})
+                # ---- 自建语音通道：主机收到学生语音 → ASR + 声纹 → 小念按人回复 ----
+                elif mtype == "voice_input":
+                    loop.run_in_executor(None, self._handle_voice_input, ws, msg)
+                elif mtype == "voice_enroll":
+                    loop.run_in_executor(None, self._handle_voice_enroll, ws, msg)
                 # ---- NPC 生命周期（多 NPC 支持）----
                 elif mtype == "spawn_npc":
                     nid = msg.get("npc_id") or msg.get("id")
@@ -675,6 +680,49 @@ class GameBridge:
             lines.append(f"- {a['name']} [{a['id']}] {a['duration']:.1f}s → {ps}")
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------ #
+    # 自建语音通道：ASR + 声纹识别（学生说话 → 小念按人回应）
+    # ------------------------------------------------------------------ #
+    def _handle_voice_input(self, ws, msg):
+        """主机收到一段学生语音：转写 → 声纹识别 → 广播文字 + 喂给小念回复。"""
+        try:
+            import speaker
+            b64 = str(msg.get("wav_b64") or "")
+            pid = msg.get("player_id", -1)
+            if not b64:
+                return
+            path = speaker.save_b64_wav(b64)
+            text = speaker.transcribe_wav(path)
+            if not text:
+                self._push(ws, {"type": "voice_text", "speaker": "?",
+                                "text": "", "player_id": pid,
+                                "note": "未识别出文字"})
+                return
+            name, score = speaker.identify(path)
+            label = name if name else f"玩家{pid}"
+            self._push(ws, {"type": "voice_text", "speaker": label,
+                            "text": text, "score": score, "player_id": pid})
+            print(f"[桥] 语音: {label}({score}) → {text[:40]}", flush=True)
+            # 喂给小念（带说话人标签，她会点名回应；走正常 NPC 回复链路）
+            self._handle_user_input(ws, f"（{label}说：{text}）", npc_id="xiaonian")
+        except Exception as e:
+            print(f"[桥] 语音处理失败: {e}", flush=True)
+
+    def _handle_voice_enroll(self, ws, msg):
+        """注册声纹：{name, wav_b64}。"""
+        try:
+            import speaker
+            name = str(msg.get("name") or "").strip()
+            b64 = str(msg.get("wav_b64") or "")
+            if not name or not b64:
+                return
+            path = speaker.save_b64_wav(b64)
+            speaker.enroll(name, path)
+            self._push(ws, {"type": "voice_enroll_done", "name": name})
+            print(f"[桥] 声纹已注册: {name}", flush=True)
+        except Exception as e:
+            print(f"[桥] 声纹注册失败: {e}", flush=True)
+
     def _console_loop(self):
         """控制台测试命令：/actions 列表 /capture <秒> <触发词> /play <动作名>。"""
         while True:
@@ -703,8 +751,26 @@ class GameBridge:
             elif line.startswith("/play"):
                 name = line[5:].strip()
                 self.play_action_clip(name)
+            elif line.startswith("/enroll"):
+                parts = line.split(" ", 2)
+                if len(parts) < 3 or not os.path.exists(parts[2].strip()):
+                    print("[桥] 用法：/enroll <名字> <wav文件路径>", flush=True)
+                    continue
+                try:
+                    import speaker
+                    speaker.enroll(parts[1].strip(), parts[2].strip())
+                    print(f"[桥] 声纹已注册: {parts[1].strip()}", flush=True)
+                except Exception as e:
+                    print(f"[桥] 声纹注册失败: {e}", flush=True)
+            elif line.startswith("/speakers"):
+                try:
+                    import speaker
+                    print(f"[桥] 已注册声纹: {speaker.list_speakers() or '（空）'}", flush=True)
+                except Exception as e:
+                    print(f"[桥] 读取声纹列表失败: {e}", flush=True)
             else:
-                print("[桥] 未知命令。可用：/actions  /capture <秒> [触发词]  /play <动作名>", flush=True)
+                print("[桥] 未知命令。可用：/actions  /capture <秒> [触发词]  /play <动作名>  "
+                      "/enroll <名字> <wav路径>  /speakers", flush=True)
 
     def run(self):
         print(f"[桥] 小念事件桥(多NPC)启动：ws://{self.host}:{self.port}")

@@ -1119,6 +1119,12 @@ class Assistant:
         t.start()
 
     def _compress_worker(self, mem, end_i):
+        # 空闲窗口：先等 30 秒（每 2 秒查一次），期间用户一开口就放弃本轮压缩，
+        # 把 Ollama 让给对话——否则压缩总结会占用串行锁拖慢下一句回复（"超级慢"元凶）。
+        for _ in range(15):
+            time.sleep(2.0)
+            if _user_chat_active:
+                return
         if _user_chat_active:
             return
         chunk = int(CONFIG.get("memory_compress_chunk", 30))
@@ -1141,11 +1147,11 @@ class Assistant:
             f"【对话记录】\n{convo}"
         )
         try:
-            # 走与主对话相同的本地 Ollama 串行锁，避免并发卡死
+            # 走与主对话相同的本地 Ollama 串行锁（此时已空闲，不会抢对话）
             resp = self._completion(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
+                max_tokens=150,
             )
             summary = _strip_think(resp.choices[0].message.content or "").strip()
             # 清理成纯要点（去空行、去编号装饰只保留文本）
@@ -1309,38 +1315,54 @@ class Assistant:
         # 单条回复长度上限（控速）：0/None 表示不限
         mt = CONFIG.get("reply_max_tokens") or None
         final_content = ""
+        rounds = 0
         for _ in range(max_rounds):
-            # 优先流式输出（同时支持 tools 决策）；本地模型/旧后端不支持时逐级退化
-            try:
+            rounds += 1
+            _rt0 = time.time()
+            # 优先流式输出；本地后端（Ollama）不支持可靠的 API 级工具调用，
+            # 直接走无工具流式（工具说明已在 system prompt 里），省掉 tool schema
+            # 开销与失败重试——之前每轮都带 tools=schemas 请求，是本地端慢路径。
+            if _is_local_backend():
                 stream = self._completion(
                     model=self.model,
                     messages=messages,
-                    tools=schemas,
-                    tool_choice="auto",
                     stream=True,
                     max_tokens=mt, **_bias_kwargs,
                 )
-            except Exception:
+            else:
                 try:
                     stream = self._completion(
                         model=self.model,
                         messages=messages,
+                        tools=schemas,
+                        tool_choice="auto",
                         stream=True,
                         max_tokens=mt, **_bias_kwargs,
                     )
                 except Exception:
-                    # 后端完全不支持 stream：退化非流式，整体返回
                     try:
-                        resp = self._completion(
-                            model=self.model, messages=messages,
-                            tools=schemas, tool_choice="auto", max_tokens=mt, **_bias_kwargs)
+                        stream = self._completion(
+                            model=self.model,
+                            messages=messages,
+                            stream=True,
+                            max_tokens=mt, **_bias_kwargs,
+                        )
                     except Exception:
-                        resp = self._completion(
-                            model=self.model, messages=messages, max_tokens=mt, **_bias_kwargs)
-                    final_content = _strip_think(resp.choices[0].message.content or "")
-                    if on_token:
-                        on_token(final_content)
-                    return final_content
+                        # 后端完全不支持 stream：退化非流式，整体返回
+                        try:
+                            resp = self._completion(
+                                model=self.model, messages=messages,
+                                tools=schemas, tool_choice="auto",
+                                max_tokens=mt, **_bias_kwargs)
+                        except Exception:
+                            resp = self._completion(
+                                model=self.model, messages=messages,
+                                max_tokens=mt, **_bias_kwargs)
+                        final_content = _strip_think(resp.choices[0].message.content or "")
+                        if on_token:
+                            on_token(final_content)
+                        return final_content
+            print(f"[assistant] 第{rounds}轮请求已发出", flush=True)
             # 解析流式响应：实时收集文本增量（交给 on_token），并拼接工具调用
             content_buf = []
             tc_acc = {}
