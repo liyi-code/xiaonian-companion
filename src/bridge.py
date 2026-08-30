@@ -808,7 +808,10 @@ class GameBridge:
         async def _serve_forever():
             # 注意：不能直接 asyncio.run(websockets.serve(...))——那样 serve 协程
             # 一返回事件循环就关闭，服务器“启动即退出”。必须挂起等待。
-            async with websockets.serve(self._on_connect, host, port):
+            # max_size 提到 8MB：语音/TTS 音频消息经常超过默认 1MB 上限，
+            # 否则出现 1009(message too big) 断连循环。
+            async with websockets.serve(self._on_connect, host, port,
+                                        max_size=8 * 1024 * 1024):
                 await asyncio.Future()   # 永久挂起，直到 Ctrl+C
 
         print(f"[桥] 实际监听地址：ws://{host}:{port}")
