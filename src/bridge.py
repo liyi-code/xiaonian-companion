@@ -519,9 +519,13 @@ class GameBridge:
                     self._push(ws, {"type": "pong"})
                 # ---- 自建语音通道：主机收到学生语音 → ASR + 声纹 → 小念按人回复 ----
                 elif mtype == "voice_input":
-                    loop.run_in_executor(None, self._handle_voice_input, ws, msg)
+                    # 注意：不能引用 user_input 分支里的局部 loop（语音先到时未定义会崩）；
+                    # 用连接建立时缓存的 self._loop。
+                    if self._loop is not None:
+                        self._loop.run_in_executor(None, self._handle_voice_input, ws, msg)
                 elif mtype == "voice_enroll":
-                    loop.run_in_executor(None, self._handle_voice_enroll, ws, msg)
+                    if self._loop is not None:
+                        self._loop.run_in_executor(None, self._handle_voice_enroll, ws, msg)
                 # ---- NPC 生命周期（多 NPC 支持）----
                 elif mtype == "spawn_npc":
                     nid = msg.get("npc_id") or msg.get("id")
@@ -625,8 +629,9 @@ class GameBridge:
                         except Exception as _e:
                             print(f"[桥] NPC {npc_id} 记忆整合失败：{_e}")
                 # 其它类型可在此扩展（如 mind_sleep / set_api ...）
-        except Exception:
-            pass
+        except Exception as e:
+            # 任何消息处理异常都打印出来（之前静默吞掉导致断连原因不可见）
+            print(f"[桥] 连接处理异常（客户端将断开重连）: {e}", flush=True)
         finally:
             with self._lock:
                 self._clients.discard(ws)
