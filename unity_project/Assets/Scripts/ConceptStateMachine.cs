@@ -629,17 +629,21 @@ public class ConceptStateMachine : MonoBehaviour
     // 修复：应用逻辑抽成 ApplyProceduralPose()，双入口兜底：
     //   · 有控制器时走 OnAnimatorIK（官方推荐时机，与动画混合最稳）；
     //   · 无控制器时走 LateUpdate（每帧必调，程序化身姿在无控制器模型上也能动）。
+    // 通道分离（治"SetBoneLocalRotation 只应在 OnAnimatorIK 调用"警告）：
+    //   · Animator 通道(SetBoneLocalRotation)【只在 OnAnimatorIK 里】调用；
+    //   · LateUpdate 只走直接 Transform 写入（无控制器模型本来就靠它生效）。
+    bool _inAnimatorIK;
+
     void OnAnimatorIK(int layerIndex)
     {
+        _inAnimatorIK = true;
         ApplyProceduralPose();
+        _inAnimatorIK = false;
     }
 
     void LateUpdate()
     {
-        // 无论有没有 AnimatorController 都执行：
-        //  · 无控制器：OnAnimatorIK 永不触发，必须靠 LateUpdate（旧路径只覆盖这种情况）；
-        //  · 有控制器但 IK Pass 没勾：OnAnimatorIK 也不触发，同样只能靠 LateUpdate；
-        //  · 有控制器且 IK Pass 勾选：两个入口都跑，写的是同一组值，幂等无害。
+        if (_inAnimatorIK) return;   // 本帧已在 IK 回调里写过，勿重复
         ApplyProceduralPose();
     }
 
@@ -691,9 +695,12 @@ public class ConceptStateMachine : MonoBehaviour
             : _idleNeckRot;
         float headYaw = _trackingPlayer ? _trackNeckYaw * 0.4f : 0f;
         float headPitchExtra = _trackingPlayer ? _trackNeckPitch * 0.5f : 0f;
-        _anim.SetBoneLocalRotation(HumanBodyBones.Spine, spineFix * _breathSpineRot);
-        _anim.SetBoneLocalRotation(HumanBodyBones.Chest, chestFix * _breathChestRot);
-        _anim.SetBoneLocalRotation(HumanBodyBones.Neck, neckRot);
+        if (_inAnimatorIK)
+        {
+            _anim.SetBoneLocalRotation(HumanBodyBones.Spine, spineFix * _breathSpineRot);
+            _anim.SetBoneLocalRotation(HumanBodyBones.Chest, chestFix * _breathChestRot);
+            _anim.SetBoneLocalRotation(HumanBodyBones.Neck, neckRot);
+        }
         if (_spine != null) _spine.localRotation = spineFix * _breathSpineRot;
         if (_chest != null) _chest.localRotation = chestFix * _breathChestRot;
         if (_neck != null) _neck.localRotation = neckRot;
@@ -727,8 +734,11 @@ public class ConceptStateMachine : MonoBehaviour
         {
             _waveUpperArmCur = Quaternion.Slerp(_waveUpperArmCur, _waveUpperArmRot, k);
             _waveLowerArmCur = Quaternion.Slerp(_waveLowerArmCur, _waveLowerArmRot, k);
-            _anim.SetBoneLocalRotation(HumanBodyBones.LeftUpperArm, _waveUpperArmCur);
-            _anim.SetBoneLocalRotation(HumanBodyBones.LeftLowerArm, _waveLowerArmCur);
+            if (_inAnimatorIK)
+            {
+                _anim.SetBoneLocalRotation(HumanBodyBones.LeftUpperArm, _waveUpperArmCur);
+                _anim.SetBoneLocalRotation(HumanBodyBones.LeftLowerArm, _waveLowerArmCur);
+            }
             if (_leftUpperArm != null) _leftUpperArm.localRotation = _waveUpperArmCur;
             if (_leftLowerArm != null) _leftLowerArm.localRotation = _waveLowerArmCur;
             if (!_waveActive) _waveTail -= Time.deltaTime;
@@ -738,8 +748,11 @@ public class ConceptStateMachine : MonoBehaviour
         {
             _nodHeadCur = Quaternion.Slerp(_nodHeadCur, _nodHeadRot, k);
             _nodChestCur = Quaternion.Slerp(_nodChestCur, _nodChestRot, k);
-            _anim.SetBoneLocalRotation(HumanBodyBones.Head, _nodHeadCur);
-            _anim.SetBoneLocalRotation(HumanBodyBones.Chest, _nodChestCur);
+            if (_inAnimatorIK)
+            {
+                _anim.SetBoneLocalRotation(HumanBodyBones.Head, _nodHeadCur);
+                _anim.SetBoneLocalRotation(HumanBodyBones.Chest, _nodChestCur);
+            }
             if (_head != null) _head.localRotation = _nodHeadCur;
             if (_chest != null) _chest.localRotation = _nodChestCur;
             if (!_nodActive) _nodTail -= Time.deltaTime;
@@ -749,7 +762,8 @@ public class ConceptStateMachine : MonoBehaviour
         {
             var lift = Quaternion.Euler(-headLiftAngle + headPitchExtra, headYaw, 0f);
             _head.localRotation = lift;
-            _anim.SetBoneLocalRotation(HumanBodyBones.Head, lift);
+            if (_inAnimatorIK)
+                _anim.SetBoneLocalRotation(HumanBodyBones.Head, lift);
         }
     }
 

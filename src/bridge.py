@@ -691,6 +691,8 @@ class GameBridge:
             pid = msg.get("player_id", -1)
             if not b64:
                 return
+            # 即时反馈：先打印"收到"，再跑识别（首次 whisper 加载 + 声纹模型下载会很慢）
+            print(f"[桥] 收到玩家{pid}语音，开始转写+声纹识别（首次可能较慢，请稍候）…", flush=True)
             path = speaker.save_b64_wav(b64)
             text = speaker.transcribe_wav(path)
             if not text:
