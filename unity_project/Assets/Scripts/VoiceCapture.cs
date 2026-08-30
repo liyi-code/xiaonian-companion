@@ -156,18 +156,43 @@ public class VoiceCapture : MonoBehaviour
     {
         // 重采样到 targetRate（48k→16k 抽 1/3；44.1k 按比例最近邻采样）
         byte[] pcm = ResampleToPcm16(_samples, _srcRate, targetRate);
+        // 打包成标准 WAV（带文件头）再发——桥/whisper 只认带头的 wav
+        byte[] wav = BuildWav(pcm, targetRate);
         // 448 字节/块：Fusion 2 RPC 载荷上限 512 字节（含参数），留足余量
         const int CHUNK = 448;
-        int total = Mathf.CeilToInt(pcm.Length / (float)CHUNK);
+        int total = Mathf.CeilToInt(wav.Length / (float)CHUNK);
         int playerId = sync.Runner != null ? sync.Runner.LocalPlayer.PlayerId : -1;
         for (int i = 0; i < total; i++)
         {
-            int len = Mathf.Min(CHUNK, pcm.Length - i * CHUNK);
+            int len = Mathf.Min(CHUNK, wav.Length - i * CHUNK);
             var part = new byte[len];
-            System.Array.Copy(pcm, i * CHUNK, part, 0, len);
+            System.Array.Copy(wav, i * CHUNK, part, 0, len);
             sync.RPC_VoiceChunk(playerId, i, total, part);
         }
-        Debug.Log($"[语音] 已发送 {_samples.Count / (float)_srcRate:F1}s 语音（{total} 块，{_srcRate}→{targetRate}Hz）");
+        Debug.Log($"[语音] 已发送 {_samples.Count / (float)_srcRate:F1}s 语音（{total} 块，{_srcRate}→{targetRate}Hz，含WAV头）");
+    }
+
+    static byte[] BuildWav(byte[] pcm, int rate)
+    {
+        using (var ms = new System.IO.MemoryStream())
+        using (var bw = new System.IO.BinaryWriter(ms))
+        {
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+            bw.Write(36 + pcm.Length);
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVE"));
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("fmt "));
+            bw.Write(16);
+            bw.Write((short)1);            // PCM
+            bw.Write((short)1);            // 单声道
+            bw.Write(rate);
+            bw.Write(rate * 2);            // 字节率
+            bw.Write((short)2);            // 块对齐
+            bw.Write((short)16);           // 位深
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+            bw.Write(pcm.Length);
+            bw.Write(pcm);
+            return ms.ToArray();
+        }
     }
 
     static byte[] ResampleToPcm16(List<float> src, int srcRate, int dstRate)

@@ -26,12 +26,22 @@ _WHISPER = None
 
 
 def save_b64_wav(b64):
-    """把 base64 wav 落盘到 data/voice_in/，返回路径（供转写/声纹使用）。"""
+    """把 base64 wav 落盘到 data/voice_in/，返回路径（供转写/声纹使用）。
+
+    防御：若上游给的是纯 PCM 裸数据（无 RIFF 头），自动补 16kHz 单声道 16bit 头。
+    """
+    import struct
+    raw = base64.b64decode(b64)
+    if raw[:4] != b"RIFF":
+        header = (b"RIFF" + struct.pack("<I", 36 + len(raw)) + b"WAVEfmt "
+                  + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+                  + b"data" + struct.pack("<I", len(raw)))
+        raw = header + raw
     d = os.path.join(CONFIG.get("data_dir", "."), "voice_in")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f"v_{int(time.time() * 1000)}.wav")
     with open(path, "wb") as f:
-        f.write(base64.b64decode(b64))
+        f.write(raw)
     return path
 
 
