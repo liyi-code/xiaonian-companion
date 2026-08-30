@@ -432,8 +432,11 @@ class GameBridge:
         action_duration = min(max(len(reply.strip()) * 0.25 / max(speed, 0.1), 1.5), 8.0)
 
         # 语音合成：把每句 wav 字节推给游戏端播放（本机不发音）
+        played_flag = [False]   # on_play 是否已触发过（TTS 失败时补发动作/情绪用）
+
         def on_play():
             # 开始说话：同时下发情绪(表情)与动作
+            played_flag[0] = True
             if emotion_vec:
                 self._push(ws, {"type": "emotion", "vector": emotion_vec,
                                 "dominant": dom, "npc_id": npc_id})
@@ -458,8 +461,22 @@ class GameBridge:
                 self._ensure_sovits()
             print(f"[桥] [{npc_id}] 开始 TTS（语速={speed}，预估动作时长={action_duration:.1f}s）",
                   flush=True)
-            brain.tts.speak(reply, on_play=on_play, on_audio=on_audio)
+            err = brain.tts.speak(reply, on_play=on_play, on_audio=on_audio)
             self._push(ws, {"type": "talk_stop", "npc_id": npc_id})
+            if err:
+                print(f"[桥] [{npc_id}] TTS 失败：{err}", flush=True)
+                # 合成失败也补发情绪+动作，别让角色“哑巴式无反应”（打字和语音指令一致）
+                if not played_flag[0]:
+                    if emotion_vec:
+                        self._push(ws, {"type": "emotion", "vector": emotion_vec,
+                                        "dominant": dom, "npc_id": npc_id})
+                    if action:
+                        _ap = compute_action_params(brain)
+                        self._push(ws, {"type": "action", "name": action,
+                                        "duration": round(action_duration, 2),
+                                        "speed": _ap["speed"], "amplitude": _ap["amplitude"],
+                                        "lean": _ap["lean"], "trait": _ap["trait"],
+                                        "npc_id": npc_id})
             t3 = _time.time()
             print(f"[桥] [{npc_id}] TTS/动作 总耗时 {t3 - t2:.2f}s，token 共 {token_count[0]} 个",
                   flush=True)
