@@ -71,7 +71,16 @@ public class AgentController : MonoBehaviour
             }
             else
             {
-                Vector3 step = dir.normalized * Mathf.Min(moveSpeed * Time.deltaTime, dist);
+                Vector3 stepDir = dir.normalized;
+                // 简单避障：前方有障碍（家具/人）→ 贴障碍向空旷一侧滑行绕开
+                Vector3 origin = transform.position + Vector3.up * 0.3f;
+                if (Physics.Raycast(origin, stepDir, 0.8f))
+                {
+                    Vector3 right = Vector3.Cross(Vector3.up, stepDir).normalized;
+                    bool rightClear = !Physics.Raycast(origin, right, 0.9f);
+                    stepDir = (rightClear ? right : -right);
+                }
+                Vector3 step = stepDir * Mathf.Min(moveSpeed * Time.deltaTime, dist);
                 transform.position += step;
                 // 朝移动方向转身
                 Quaternion to = Quaternion.LookRotation(dir.normalized);

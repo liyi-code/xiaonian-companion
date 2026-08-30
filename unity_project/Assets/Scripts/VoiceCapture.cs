@@ -54,15 +54,14 @@ public class VoiceCapture : MonoBehaviour
 
     bool PushToTalk()
     {
-        // VR：右手柄扳机；桌面：按住 talkKey
+        // 桌面 V 键与 VR 扳机【同时生效】（取或）：没戴头显时按 V 一定有效
+        bool vrTrig = false;
         if (XRSettings.isDeviceActive)
         {
             var rh = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
-            bool trig = false;
-            if (rh.isValid) rh.TryGetFeatureValue(CommonUsages.triggerButton, out trig);
-            return trig;
+            if (rh.isValid) rh.TryGetFeatureValue(CommonUsages.triggerButton, out vrTrig);
         }
-        return Input.GetKey(talkKey);
+        return Input.GetKey(talkKey) || vrTrig;
     }
 
     void Update()

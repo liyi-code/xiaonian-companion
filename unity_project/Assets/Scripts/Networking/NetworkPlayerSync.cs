@@ -92,6 +92,19 @@ public class NetworkPlayerSync : NetworkBehaviour
             _chat = GetComponent<PlayerChatController>();
             if (_chat == null) _chat = gameObject.AddComponent<PlayerChatController>();
 
+            // 让小念注视本机玩家：把 NPC 的 ConceptStateMachine.player 指到本玩家
+            // （注视追踪：正面120°内只转头、锥外转身+转头，保证玩家在视野中间）
+            try
+            {
+                var npcAgent = FindObjectOfType<NpcAgent>();
+                if (npcAgent != null)
+                {
+                    var csm = npcAgent.GetComponent<ConceptStateMachine>();
+                    if (csm != null) csm.player = transform;
+                }
+            }
+            catch { }
+
             // 关掉其它相机和聊天入口，避免多视角/多 UI 打架
             foreach (var other in FindObjectsOfType<Camera>())
                 if (other != _cam) other.enabled = false;
@@ -187,8 +200,9 @@ public class NetworkPlayerSync : NetworkBehaviour
         }
         else
         {
-            UpdateVrInput();
-            return;   // VR 模式下跳过鼠标/锁光标逻辑
+            // 有真实头显数据才走纯 VR 输入；否则回落到桌面键鼠（修"按V/鼠标没反应"）
+            if (UpdateVrInput())
+                return;
         }
 
         // Esc 释放鼠标；聊天框打开时不允许重新锁定（防"点发送后鼠标消失"）
@@ -231,24 +245,25 @@ public class NetworkPlayerSync : NetworkBehaviour
 
     // VR 输入：头显驱动视角/朝向，左摇杆移动（相对头朝向），右手柄主键(A)跳跃。
     // 所有头显都走 OpenXR 通用接口（Quest Link / SteamVR / 学校头显）。
-    void UpdateVrInput()
+    // 返回 true=本次已按 VR 处理；false=头显无数据，调用方回落到桌面键鼠。
+    bool UpdateVrInput()
     {
         var hmd = InputDevices.GetDeviceAtXRNode(XRNode.CenterEye);
-        if (hmd.isValid &&
-            hmd.TryGetFeatureValue(CommonUsages.centerEyePosition, out Vector3 headPos) &&
-            hmd.TryGetFeatureValue(CommonUsages.centerEyeRotation, out Quaternion headRot))
+        if (!hmd.isValid ||
+            !hmd.TryGetFeatureValue(CommonUsages.centerEyePosition, out Vector3 headPos) ||
+            !hmd.TryGetFeatureValue(CommonUsages.centerEyeRotation, out Quaternion headRot))
+            return false;
+
+        if (_cam != null)
         {
-            if (_cam != null)
-            {
-                _cam.transform.localPosition = headPos;
-                _cam.transform.localRotation = headRot;
-            }
-            // 身体朝向跟随头显偏航（头骨细调交给 VrFullBodyTracking）
-            Vector3 fwd = headRot * Vector3.forward;
-            fwd.y = 0f;
-            if (fwd.sqrMagnitude > 0.001f)
-                transform.rotation = Quaternion.LookRotation(fwd);
+            _cam.transform.localPosition = headPos;
+            _cam.transform.localRotation = headRot;
         }
+        // 身体朝向跟随头显偏航（头骨细调交给 VrFullBodyTracking）
+        Vector3 fwd = headRot * Vector3.forward;
+        fwd.y = 0f;
+        if (fwd.sqrMagnitude > 0.001f)
+            transform.rotation = Quaternion.LookRotation(fwd);
 
         var lh = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
         Vector2 stick = Vector2.zero;
@@ -264,6 +279,7 @@ public class NetworkPlayerSync : NetworkBehaviour
         if (btn && !_vrJumpHeld)
             _jumpQueued = true;
         _vrJumpHeld = btn;
+        return true;
     }
 
     public override void FixedUpdateNetwork()

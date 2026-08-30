@@ -131,6 +131,20 @@ public class PlayerChatController : MonoBehaviour
         _hint = $"→ {receiverName}: {t}";
         _text = "";
         CloseChat();
+
+        // 「过来/到我面前」类指令：小念移动到玩家身前 1 米（本地导航，桥流程不受影响）
+        if (t.Contains("过来") || t.Contains("到我面前") || t.Contains("到我这里") ||
+            t.Contains("到我身边") || t.Contains("靠近我") || t.Contains("来我这里") ||
+            t.Contains("近一点") || t.Contains("走近"))
+        {
+            var agent = FindObjectOfType<NpcAgent>();
+            var ac = agent != null ? agent.GetComponent<AgentController>() : null;
+            if (ac != null)
+            {
+                Vector3 front = transform.position + transform.forward * 1.0f;
+                ac.HandleCommand("move", front, null);
+            }
+        }
     }
 
     void CloseChat()

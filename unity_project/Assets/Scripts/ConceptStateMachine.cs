@@ -24,6 +24,10 @@ public class ConceptStateMachine : MonoBehaviour
     public Transform player;                 // 拖入玩家物体（如 Main Camera 或 Player 胶囊）
     public float triggerRadius = 3f;         // 3 米内触发
     public float lookSpeed = 3f;
+    [Tooltip("注视追踪距离：玩家在此距离内，小念会看着你")]
+    public float lookAtRange = 12f;
+    [Tooltip("正面锥半角(度)：玩家在锥内只转头；锥外转身+转头（正面120度 = 半角60度）")]
+    public float headTrackConeHalfAngle = 60f;
     private bool _playerNear;
     private NpcBridgeClient _bridge;
 
@@ -195,6 +199,10 @@ public class ConceptStateMachine : MonoBehaviour
     private Quaternion _breathSpineRot = Quaternion.identity;  // Spine 起伏
     private Quaternion _breathChestRot = Quaternion.identity;
     private Quaternion _idleNeckRot = Quaternion.identity;     // Neck 随机转头
+    // 注视追踪：看向玩家时的颈部偏航（头身分档：锥内转头、锥外转身+转头）
+    private bool _trackingPlayer;
+    private float _trackNeckYaw;
+    private float _trackNeckPitch;
     // 待机“挺直”修正：本项目用的 Idle 剪辑是 Starter Assets 第三人称男模的
     // Stand--Idle，它本身带明显含胸 + 脊柱前倾（看起来像一直在弯腰）。
     // 这里每帧对 Spine/Chest 施加固定后展(-X)，把含胸姿态拉回到接近直立。
@@ -359,7 +367,38 @@ public class ConceptStateMachine : MonoBehaviour
             {
                 _playerNear = false;
             }
-            if (_playerNear && !_lookLocked) FacePlayer();
+            // 注视追踪（按 T 聊天/靠近时她会看着你）：
+            //  玩家在正面 120° 锥内 → 只转头；锥外 → 转身 + 转头；超出距离 → 停止追踪
+            if (!_lookLocked)
+            {
+                Vector3 toPlayer = player.position - transform.position;
+                toPlayer.y = 0f;
+                if (toPlayer.sqrMagnitude > 0.0001f && toPlayer.magnitude <= lookAtRange)
+                {
+                    _trackingPlayer = true;
+                    // 垂直：轻微俯仰让视线也对准玩家头部（±12°）
+                    float eyeY = player.position.y + 1.45f;
+                    float neckY = _neck != null ? _neck.position.y : transform.position.y + 1.4f;
+                    float pitch = Mathf.Atan2(eyeY - neckY, Mathf.Max(0.5f, toPlayer.magnitude))
+                                  * Mathf.Rad2Deg;
+                    _trackNeckPitch = Mathf.Clamp(pitch, -12f, 12f);
+                    float angle = Vector3.SignedAngle(transform.forward, toPlayer.normalized, Vector3.up);
+                    if (Mathf.Abs(angle) > headTrackConeHalfAngle)
+                    {
+                        FacePlayer();   // 锥外：身体转过去（Slerp 平滑）
+                        float after = Vector3.SignedAngle(transform.forward, toPlayer.normalized, Vector3.up);
+                        _trackNeckYaw = Mathf.Clamp(after, -headTrackConeHalfAngle, headTrackConeHalfAngle);
+                    }
+                    else
+                    {
+                        _trackNeckYaw = angle;   // 锥内：只转头，身体不动
+                    }
+                }
+                else
+                {
+                    _trackingPlayer = false;
+                }
+            }
         }
 
         // 说话律动：用音频频谱能量驱动身体起伏
@@ -645,12 +684,19 @@ public class ConceptStateMachine : MonoBehaviour
         // —— 双通道写入：Animator 通道 + 直接写骨骼 Transform ——
         // 无 AnimatorController 的 VRM 上 SetBoneLocalRotation 可能不生效（旧现象：
         // 姿态从未显示、只剩服饰 SpringBone 在动），直接写 Transform 保证必定生效。
+        // 注视追踪：追踪时颈部俯仰+偏航朝向玩家；否则用随机转头叠加层。
+        // 头再补 40% 偏航，视线更自然地对准玩家（保证玩家始终在视野中间）。
+        Quaternion neckRot = _trackingPlayer
+            ? Quaternion.Euler(_trackNeckPitch, _trackNeckYaw, 0f)
+            : _idleNeckRot;
+        float headYaw = _trackingPlayer ? _trackNeckYaw * 0.4f : 0f;
+        float headPitchExtra = _trackingPlayer ? _trackNeckPitch * 0.5f : 0f;
         _anim.SetBoneLocalRotation(HumanBodyBones.Spine, spineFix * _breathSpineRot);
         _anim.SetBoneLocalRotation(HumanBodyBones.Chest, chestFix * _breathChestRot);
-        _anim.SetBoneLocalRotation(HumanBodyBones.Neck, _idleNeckRot);
+        _anim.SetBoneLocalRotation(HumanBodyBones.Neck, neckRot);
         if (_spine != null) _spine.localRotation = spineFix * _breathSpineRot;
         if (_chest != null) _chest.localRotation = chestFix * _breathChestRot;
-        if (_neck != null) _neck.localRotation = _idleNeckRot;
+        if (_neck != null) _neck.localRotation = neckRot;
 
         // 髋部挺直（解决"撅着屁股"/骨盆前倾）：把「髋→胸」世界方向增量拉回竖直。
         // 关键：Hips 的绑定局部旋转通常非零，绝不能整值覆盖（会翻倒/倒立），
@@ -701,7 +747,7 @@ public class ConceptStateMachine : MonoBehaviour
         // 待机抬头微调（补偿绑定位低头；负X=抬头）。点头时交给 nod 接管。
         if (!nodWriting && _head != null)
         {
-            var lift = Quaternion.Euler(-headLiftAngle, 0f, 0f);
+            var lift = Quaternion.Euler(-headLiftAngle + headPitchExtra, headYaw, 0f);
             _head.localRotation = lift;
             _anim.SetBoneLocalRotation(HumanBodyBones.Head, lift);
         }
