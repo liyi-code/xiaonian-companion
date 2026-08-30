@@ -453,6 +453,9 @@ class GameBridge:
 
         t2 = _time.time()
         if brain.tts.is_ready():
+            # 9880 没服务就自动拉起 SoVITS（桥独立运行也能出声）
+            if not self._sovits_up():
+                self._ensure_sovits()
             print(f"[桥] [{npc_id}] 开始 TTS（语速={speed}，预估动作时长={action_duration:.1f}s）",
                   flush=True)
             brain.tts.speak(reply, on_play=on_play, on_audio=on_audio)
@@ -729,6 +732,52 @@ class GameBridge:
             print(f"[桥] 声纹已注册: {name}", flush=True)
         except Exception as e:
             print(f"[桥] 声纹注册失败: {e}", flush=True)
+
+    # ------------------------------------------------------------------ #
+    # GPT-SoVITS 自动拉起（桥独立运行时也能出声，与 GUI 的启动逻辑一致）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _sovits_up():
+        import socket as _socket
+        try:
+            s = _socket.create_connection(("127.0.0.1", 9880), timeout=1)
+            s.close()
+            return True
+        except OSError:
+            return False
+
+    def _ensure_sovits(self):
+        """9880 没服务就按 .env 配置拉起 api_v2（与 gui._start_sovits 同参）。"""
+        if self._sovits_up():
+            return
+        try:
+            import subprocess
+            home = CONFIG.get("sovits_home", "")
+            if not home or not os.path.isdir(home):
+                print("[桥] 未配置 SOVITS_HOME，无法自动启动 GPT-SoVITS（回复仍会以文字显示）", flush=True)
+                return
+            py = os.path.join(home, "runtime", "python.exe")
+            if not os.path.exists(py):
+                alt = CONFIG.get("sovits_python", "").strip()
+                if alt and os.path.exists(alt):
+                    py = alt
+                elif os.path.exists(r"D:\sovits_env\python.exe"):
+                    py = r"D:\sovits_env\python.exe"
+                else:
+                    print("[桥] 未找到 GPT-SoVITS 的 python 解释器，无法启动", flush=True)
+                    return
+            args = [py, "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
+                    "-c", "GPT_SoVITS/configs/tts_infer.yaml"]
+            env = dict(os.environ)
+            env["PATH"] = os.path.join(home, "runtime") + os.pathsep + env.get("PATH", "")
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
+            log_path = os.path.join(os.path.dirname(_HERE), "..", "sovits.log")
+            subprocess.Popen(args, cwd=home, env=env,
+                             stdout=open(log_path, "ab"), stderr=subprocess.STDOUT)
+            print("[桥] 正在启动 GPT-SoVITS 声音合成（首次加载几十秒，这条回复先出文字）…", flush=True)
+        except Exception as e:
+            print(f"[桥] 启动 GPT-SoVITS 失败：{e}", flush=True)
 
     def _console_loop(self):
         """控制台测试命令：/actions 列表 /capture <秒> <触发词> /play <动作名>。"""
