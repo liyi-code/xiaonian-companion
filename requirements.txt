@@ -11,6 +11,6 @@ Pillow>=10.0.0
 websockets>=12.0
 python-osc>=1.8.3
 
-# 声纹识别（自建 3D 语音通道）：wespeaker 依赖 torch，项目 venv(Python 3.14) 无 torch 轮子，
-# 改由带 torch 的环境跑子进程（src/speaker_worker.py）。安装：
-#   D:\sovits_env\python.exe -m pip install wespeaker
+# 声纹识别（自建 3D 语音通道）：speechbrain(ECAPA-TDNN) 依赖 torch，项目 venv(Python 3.14)
+# 无 torch 轮子，改由带 torch 的环境跑子进程（src/speaker_worker.py）。安装：
+#   D:\sovits_env\python.exe -m pip install speechbrain -i https://pypi.tuna.tsinghua.edu.cn/simple

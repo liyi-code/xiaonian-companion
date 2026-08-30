@@ -2,13 +2,13 @@
 """声纹识别 + 语音转写（自建 3D 语音通道的主机侧处理）。
 
 - 转写(ASR)：faster-whisper（本进程直接跑，CPU int8）
-- 声纹：wespeaker——项目 venv 是 Python 3.14（无 torch 轮子），
+- 声纹：speechbrain ECAPA-TDNN——项目 venv 是 Python 3.14（无 torch 轮子），
   改为子进程方案：用带 torch 的环境（默认 D:\\sovits_env\\python.exe，
   即 .env 的 SOVITS_PYTHON）执行 src/speaker_worker.py。
-  首次使用会自动从 modelscope 下载中文声纹模型（几分钟）。
+  首次使用会自动从 hf-mirror 下载声纹模型（~25MB）。
 - 任何失败都优雅降级：转写返回空串、识别返回未知名，不影响主流程。
 
-子进程环境安装：D:\\sovits_env\\python.exe -m pip install wespeaker
+子进程环境安装：D:\\sovits_env\\python.exe -m pip install speechbrain
 """
 import os
 import base64

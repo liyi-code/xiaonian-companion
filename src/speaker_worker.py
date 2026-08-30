@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """声纹识别子进程（在带 torch 的环境里跑，如 D:\\sovits_env）。
 
-项目 venv 是 Python 3.14（无 torch 轮子），wespeaker 装不进去；
+项目 venv 是 Python 3.14（无 torch 轮子），声纹引擎装不进去；
 本脚本由 src/speaker.py 用 sovits_env 的 python 以子进程方式调用。
 
 用法：
@@ -10,7 +10,7 @@
     python speaker_worker.py list                     # 输出已注册名单（逗号分隔）
 
 声纹库存放：<项目>/data/voiceprints/（与主进程共享）。
-依赖：pip install wespeaker（首次 identify/enroll 会自动从 modelscope 下载中文模型）。
+依赖：pip install speechbrain（首次会从 hf-mirror 下载 ECAPA-TDNN 模型 ~25MB）。
 """
 import os
 import sys
@@ -20,26 +20,34 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+# 国内镜像：模型下载走 hf-mirror（与 whisper 同一策略）
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 from config import CONFIG
 
 VP_DIR = os.path.join(CONFIG.get("data_dir", "."), "voiceprints")
 MATCH_THRESHOLD = 0.60
 
 _SPK = None
+_MODEL_DIR = os.path.normpath(os.path.join(_HERE, "..", "models", "speechbrain_ecapa"))
 
 
 def _load_spk():
     global _SPK
     if _SPK is not None:
         return _SPK
-    import wespeaker
-    _SPK = wespeaker.load_model("chinese")   # 首次自动下载（modelscope 源，需几分钟）
+    from speechbrain.inference.speaker import EncoderClassifier
+    _SPK = EncoderClassifier.from_hparams(
+        source="speechbrain/spkrec-ecapa-voxceleb",
+        savedir=_MODEL_DIR,
+        run_opts={"device": "cpu"},
+    )
     return _SPK
 
 
 def _embedding(path):
     import numpy as np
-    emb = _load_spk().extract_embedding(path)
+    emb = _load_spk().encode_file(path)   # torch tensor (1, 192)
     if hasattr(emb, "cpu"):
         emb = emb.cpu().numpy()
     emb = np.asarray(emb, dtype=np.float32).reshape(-1)
