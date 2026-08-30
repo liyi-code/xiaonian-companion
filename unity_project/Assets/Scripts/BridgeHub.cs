@@ -176,6 +176,18 @@ public class BridgeHub : MonoBehaviour
                 ActionRecorder.HandleCapture(ev);
                 break;
 
+            // ---- 语音移动指令：小念走到说话玩家身前 1 米（自建语音通道）----
+            case "voice_move":
+                var pid = ev.Value<int?>("player_id") ?? -1;
+                var moveNpc = FindObjectOfType<NpcAgent>();
+                var ac = moveNpc != null ? moveNpc.GetComponent<AgentController>() : null;
+                if (ac != null && NetworkPlayerSync.PlayerRegistry.TryGetValue(pid, out var root) && root != null)
+                {
+                    Vector3 target = root.position + root.forward * 1.0f;
+                    ac.HandleCommand("move", target, null);
+                }
+                break;
+
             default:
                 // 其它事件都按 npc_id 分派给对应 Agent
                 if (!string.IsNullOrEmpty(npcId) && _agents.TryGetValue(npcId, out var agent))

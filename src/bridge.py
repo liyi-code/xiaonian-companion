@@ -730,6 +730,12 @@ class GameBridge:
             self._push(ws, {"type": "voice_text", "speaker": label,
                             "text": text, "score": score, "player_id": pid})
             print(f"[桥] 语音: {label}({score}) → {text[:40]}", flush=True)
+            # 移动类指令：广播 voice_move，Unity 让 NPC 走向该玩家（本地导航+避障）
+            if any(k in text for k in ("过来", "到我面前", "到我这里", "到我身边",
+                                       "靠近我", "来我这里", "走近", "过来一下")):
+                self._broadcast({"type": "voice_move", "npc_id": "xiaonian",
+                                 "player_id": pid})
+                print(f"[桥] 移动指令：NPC 走向玩家{pid}身前1米", flush=True)
             # 喂给小念（带说话人标签，她会点名回应；走正常 NPC 回复链路）
             self._handle_user_input(ws, f"（{label}说：{text}）", npc_id="xiaonian")
         except Exception as e:
